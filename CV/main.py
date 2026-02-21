@@ -31,6 +31,7 @@ class Config:
     pulse_min_scale: float = 0.55
     pulse_max_scale: float = 2.50
     hit_flash_ms: int = 40
+    hit_fill_alpha: float = 0.30
 
     # Timing behavior
     lead_ms: int = 350
@@ -49,6 +50,8 @@ class Config:
     marker_length_m: float = 0.05
     drum_highlight_r_m: float = 0.14
     circle_pts: int = 64
+    min_circle_pts: int = 16
+    pose_smooth_alpha: float = 0.55
 
     # Video
     cam_index: int = 0
@@ -105,6 +108,8 @@ def make_config(args: argparse.Namespace) -> Config:
             frame_h=360,
             use_3d=True,
             circle_pts=32,
+            min_circle_pts=12,
+            pose_smooth_alpha=0.50,
             base_ring_thickness=8,
             detect_downscale=0.7,
             detect_every_n_frames=2,
@@ -158,6 +163,11 @@ def clamp01(x: float) -> float:
     return x
 
 
+def smoothstep01(x: float) -> float:
+    t = clamp01(x)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def bbox_from_corners(corners_1x4x2: np.ndarray) -> Tuple[int, int, int, int]:
     pts = corners_1x4x2.reshape(-1, 2)
     x_min = float(np.min(pts[:, 0]))
@@ -175,6 +185,53 @@ def make_marker_radius_map(cfg: Config) -> Dict[int, float]:
             r = float(cfg.drum_highlight_r_m)
         marker_radii[int(mid)] = r
     return marker_radii
+
+
+def smooth_pose(
+    prev_pose: Tuple[np.ndarray, np.ndarray],
+    curr_pose: Tuple[np.ndarray, np.ndarray],
+    alpha: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    a = clamp01(float(alpha))
+    prev_r, prev_t = prev_pose
+    curr_r, curr_t = curr_pose
+
+    prev_r = np.asarray(prev_r, dtype=np.float64).reshape(3, 1)
+    prev_t = np.asarray(prev_t, dtype=np.float64).reshape(3, 1)
+    curr_r = np.asarray(curr_r, dtype=np.float64).reshape(3, 1)
+    curr_t = np.asarray(curr_t, dtype=np.float64).reshape(3, 1)
+
+    # Keep axis-angle direction consistent to avoid jitter from sign flips.
+    if float(np.dot(prev_r.reshape(3), curr_r.reshape(3))) < 0.0:
+        curr_r = -curr_r
+
+    out_r = (1.0 - a) * prev_r + a * curr_r
+    out_t = (1.0 - a) * prev_t + a * curr_t
+    return out_r, out_t
+
+
+def pick_project_circle_pts(
+    mtx: np.ndarray,
+    tvec: np.ndarray,
+    radius_m: float,
+    max_pts: int,
+    min_pts: int,
+) -> int:
+    max_p = max(8, int(max_pts))
+    min_p = min(max_p, max(8, int(min_pts)))
+    tz = float(np.asarray(tvec, dtype=np.float64).reshape(3, 1)[2, 0])
+    if tz <= 1e-5:
+        return max_p
+
+    fx = float(mtx[0, 0])
+    fy = float(mtx[1, 1])
+    f = 0.5 * (fx + fy)
+    if not np.isfinite(f) or f <= 1e-5:
+        return max_p
+
+    px_radius = abs(f * float(radius_m) / tz)
+    target = int(round(0.60 * px_radius))
+    return int(np.clip(target, min_p, max_p))
 
 
 def safe_load_calibration(path: str) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -323,6 +380,39 @@ def alpha_draw_polyline(
     cv2.addWeighted(overlay, a, roi, 1.0 - a, 0, dst=roi)
 
 
+def alpha_fill_polygon(
+    frame: np.ndarray,
+    poly: np.ndarray,
+    color: Tuple[int, int, int],
+    alpha: float,
+) -> None:
+    if poly.size == 0:
+        return
+    a = float(clamp01(alpha))
+    if a <= 0:
+        return
+    if a >= 0.995:
+        cv2.fillPoly(frame, [poly], color, lineType=cv2.LINE_AA)
+        return
+
+    pts = poly.reshape(-1, 2).astype(np.float32)
+    min_xy = np.min(pts, axis=0)
+    max_xy = np.max(pts, axis=0)
+    pad = 2
+    roi_box = _clip_roi(frame, min_xy[0] - pad, min_xy[1] - pad, max_xy[0] + pad, max_xy[1] + pad)
+    if roi_box is None:
+        return
+
+    x0, y0, x1, y1 = roi_box
+    roi = frame[y0:y1, x0:x1]
+    overlay = roi.copy()
+    shifted = poly.copy()
+    shifted[:, 0] -= x0
+    shifted[:, 1] -= y0
+    cv2.fillPoly(overlay, [shifted], color, lineType=cv2.LINE_AA)
+    cv2.addWeighted(overlay, a, roi, 1.0 - a, 0, dst=roi)
+
+
 def draw_banner(frame: np.ndarray, text: str, ok: bool = True) -> None:
     _h, w = frame.shape[:2]
     bar_h = 60
@@ -357,9 +447,11 @@ def draw_projected_ring_safe(
     tvec: np.ndarray,
     radius_m: float,
     circle_pts: int,
+    min_circle_pts: int = 16,
     color=(0, 0, 255),
     alpha: float = 0.25,
     thickness: int = 6,
+    fill_alpha: float = 0.0,
 ) -> bool:
     """
     Projects a ring on the marker plane using its pose.
@@ -391,7 +483,8 @@ def draw_projected_ring_safe(
     if radius_m <= 0:
         return False
 
-    angles = np.linspace(0, 2 * np.pi, circle_pts, endpoint=False)
+    pts_count = pick_project_circle_pts(mtx, tvec, radius_m, circle_pts, min_circle_pts)
+    angles = np.linspace(0, 2 * np.pi, pts_count, endpoint=False)
     obj_pts = np.stack(
         [radius_m * np.cos(angles), radius_m * np.sin(angles), np.zeros_like(angles)],
         axis=1
@@ -438,7 +531,10 @@ def draw_projected_ring_safe(
 
     poly = np.rint(pts2).astype(np.int32)
 
-    alpha_draw_polyline(frame, poly, color, thickness, alpha)
+    if fill_alpha > 0.0:
+        alpha_fill_polygon(frame, poly, color, fill_alpha)
+    if thickness > 0 and alpha > 0.0:
+        alpha_draw_polyline(frame, poly, color, thickness, alpha)
     return True
 
 
@@ -488,8 +584,10 @@ def draw_hit_pulse_3d(
     hold_ms: int,
     pulse_max_scale: float,
     hit_flash_ms: int,
+    hit_fill_alpha: float,
     drum_highlight_r_m: float,
     circle_pts: int,
+    min_circle_pts: int,
     reference_r_m: float,
 ) -> None:
     if dt_ms > lead_ms or dt_ms < -hold_ms:
@@ -499,35 +597,30 @@ def draw_hit_pulse_3d(
     size_ratio = float(np.clip(base_r / max(reference_r_m, 1e-4), 0.5, 2.5))
 
     if dt_ms >= 0:
-        t = clamp01(dt_ms / float(lead_ms))
+        t = smoothstep01(dt_ms / float(lead_ms))
         r = base_r * (1.0 + (pulse_max_scale - 1.0) * t)
-        alpha = 0.28 + 0.22 * (1.0 - t)
+        alpha = 0.30 + 0.20 * (1.0 - t)
         thickness = max(2, int(round((3 + 5 * (1.0 - t)) * size_ratio)))
     else:
-        t = clamp01((-dt_ms) / float(hold_ms))
+        t = smoothstep01((-dt_ms) / float(hold_ms))
         r = base_r * (1.0 - 0.20 * t)
-        alpha = 0.42 * (1.0 - t)
+        alpha = 0.40 * (1.0 - t)
         thickness = max(2, int(round(6 * size_ratio)))
+
+    flash = 0.0
+    if abs(dt_ms) <= hit_flash_ms:
+        flash = smoothstep01(1.0 - (abs(dt_ms) / float(max(1, hit_flash_ms))))
 
     ok = draw_projected_ring_safe(
         frame, mtx, dist, rvec, tvec,
-        r, circle_pts,
+        r, circle_pts, min_circle_pts,
         color=(0, 0, 255),
-        alpha=alpha,
-        thickness=thickness
+        alpha=min(0.95, alpha + 0.20 * flash),
+        thickness=thickness,
+        fill_alpha=hit_fill_alpha * flash,
     )
     if not ok:
         return
-
-    if abs(dt_ms) <= hit_flash_ms:
-        draw_projected_ring_safe(
-            frame, mtx, dist, rvec, tvec,
-            base_r * 1.02,
-            circle_pts,
-            color=(0, 0, 255),
-            alpha=0.35,
-            thickness=max(4, int(round(10 * size_ratio)))
-        )
 
 
 def draw_roll_2d(
@@ -600,6 +693,7 @@ def draw_roll_3d(
         frame, mtx, dist, rvec, tvec,
         r_outer,
         cfg.circle_pts,
+        cfg.min_circle_pts,
         color=(0, 0, 255),
         alpha=strength,
         thickness=outer_th
@@ -611,6 +705,7 @@ def draw_roll_3d(
         frame, mtx, dist, rvec, tvec,
         r_inner,
         cfg.circle_pts,
+        cfg.min_circle_pts,
         color=(0, 0, 255),
         alpha=min(0.45, 0.26 + 0.03 * max(0, pulse.count - 2)),
         thickness=inner_th
@@ -621,6 +716,7 @@ def draw_roll_3d(
             frame, mtx, dist, rvec, tvec,
             drum_highlight_r_m * 1.04,
             cfg.circle_pts,
+            cfg.min_circle_pts,
             color=(0, 0, 255),
             alpha=0.22,
             thickness=max(4, outer_th + max(2, int(round(4 * size_ratio))))
@@ -881,6 +977,7 @@ def main():
     cached_ids: Optional[np.ndarray] = None
     cached_corners: List[np.ndarray] = []
     cached_poses: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+    smoothed_pose_by_mid: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
     cached_age = cfg.max_cached_detection_frames + 1
 
     fps_last_t = time.perf_counter()
@@ -908,8 +1005,18 @@ def main():
             cached_age = 0
 
             if use_3d and ids is not None:
-                cached_poses = estimate_poses(corners, ids, mtx, dist, cfg.marker_length_m)
+                raw_poses = estimate_poses(corners, ids, mtx, dist, cfg.marker_length_m)
+                next_smoothed: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+                for mid, pose_now in raw_poses.items():
+                    prev_pose = smoothed_pose_by_mid.get(mid)
+                    if prev_pose is None:
+                        next_smoothed[mid] = pose_now
+                    else:
+                        next_smoothed[mid] = smooth_pose(prev_pose, pose_now, cfg.pose_smooth_alpha)
+                smoothed_pose_by_mid = next_smoothed
+                cached_poses = next_smoothed
             else:
+                smoothed_pose_by_mid = {}
                 cached_poses = {}
         else:
             cached_age += 1
@@ -983,6 +1090,7 @@ def main():
                     frame, mtx, dist, rvec, tvec,
                     drum_r_m,
                     cfg.circle_pts,
+                    cfg.min_circle_pts,
                     color=(0, 255, 0),
                     alpha=cfg.base_ring_alpha,
                     thickness=cfg.base_ring_thickness,
@@ -1002,14 +1110,14 @@ def main():
                     if dt_past is not None:
                         draw_hit_pulse_3d(
                             frame, mtx, dist, rvec, tvec, dt_past,
-                            cfg.lead_ms, cfg.hold_ms, cfg.pulse_max_scale, cfg.hit_flash_ms,
-                            drum_r_m, cfg.circle_pts, cfg.drum_highlight_r_m
+                            cfg.lead_ms, cfg.hold_ms, cfg.pulse_max_scale, cfg.hit_flash_ms, cfg.hit_fill_alpha,
+                            drum_r_m, cfg.circle_pts, cfg.min_circle_pts, cfg.drum_highlight_r_m
                         )
                     if dt_future is not None:
                         draw_hit_pulse_3d(
                             frame, mtx, dist, rvec, tvec, dt_future,
-                            cfg.lead_ms, cfg.hold_ms, cfg.pulse_max_scale, cfg.hit_flash_ms,
-                            drum_r_m, cfg.circle_pts, cfg.drum_highlight_r_m
+                            cfg.lead_ms, cfg.hold_ms, cfg.pulse_max_scale, cfg.hit_flash_ms, cfg.hit_fill_alpha,
+                            drum_r_m, cfg.circle_pts, cfg.min_circle_pts, cfg.drum_highlight_r_m
                         )
             # Label (show ROLL when a roll is active on this marker)
             label = marker_id_to_name.get(mid, f"ID {mid}")

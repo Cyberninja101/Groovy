@@ -1,0 +1,312 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>brandy_clip – Drum Preview</title>
+  <style>
+    body {
+      font-family: -apple-system, system-ui, Segoe UI, Roboto, Arial, sans-serif;
+      margin: 16px;
+      background: #0b0b0f;
+      color: #f2f2f6;
+    }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .card {
+      background: #151522;
+      border: 1px solid #2a2a3d;
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    }
+    .controls input {
+      width: 340px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #2a2a3d;
+      background: #0f0f18;
+      color: #f2f2f6;
+    }
+    button {
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid #2a2a3d;
+      background: #1c1c2b;
+      color: #f2f2f6;
+      cursor: pointer;
+    }
+    button:hover { background: #242438; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .pad {
+      height: 140px;
+      border-radius: 18px;
+      border: 2px solid #2a2a3d;
+      background: #101021;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+      user-select: none;
+    }
+    .pad .label {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .pad .sub {
+      position: absolute;
+      bottom: 10px;
+      left: 12px;
+      font-size: 14px;
+      opacity: 0.8;
+    }
+    .lit {
+      filter: brightness(1.7);
+      border-color: #ffffff;
+      box-shadow: 0 0 30px rgba(255,255,255,0.25);
+      background: #1d1d35;
+    }
+    .meta {
+      margin-top: 10px;
+      opacity: 0.85;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    #player {
+      width: 100%;
+      max-width: 720px;
+      aspect-ratio: 16 / 9;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #2a2a3d;
+    }
+    .slider {
+      display: grid;
+      grid-template-columns: 120px 1fr 80px;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    .slider input[type="range"] { width: 100%; }
+    code {
+      background: #0f0f18;
+      border: 1px solid #2a2a3d;
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h2 style="margin: 0 0 6px 0;">Drum Cue Preview – brandy_clip</h2>
+  <div class="meta" style="margin: 0 0 12px 0;">
+    Source JSON: <code>brandy-1350.json</code> • events: <code>438</code> • first t_ms: <code>1146</code> • last t_ms: <code>61784</code>
+  </div>
+
+  <div class="row">
+    <div class="card controls" style="flex: 1; min-width: 360px;">
+      <div class="row" style="margin-bottom: 10px;">
+        <input id="ytInput" placeholder="Paste YouTube URL or ID (e.g. dQw4w9WgXcQ)" />
+        <button id="loadBtn">Load Video</button>
+      </div>
+
+      <div class="row" style="margin-bottom: 8px;">
+        <button id="startBtn" disabled>Start</button>
+        <button id="pauseBtn" disabled>Pause</button>
+        <button id="resetBtn" disabled>Reset</button>
+      </div>
+
+      <div class="slider">
+        <div>Offset (ms)</div>
+        <input id="offset" type="range" min="-3000" max="3000" value="0" />
+        <div id="offsetVal">0</div>
+      </div>
+
+      <div class="slider">
+        <div>Flash (ms)</div>
+        <input id="flash" type="range" min="40" max="400" value="120" />
+        <div id="flashVal">120</div>
+      </div>
+
+      <div class="meta" id="status">
+        Loaded <code>brandy-1350.json</code> (first event at 1146ms). Load a video, then press <code>Start</code>.
+      </div>
+    </div>
+
+    <div class="card" style="flex: 1; min-width: 360px;">
+      <div id="player"></div>
+      <div class="meta">
+        Tip: If cues feel early/late, adjust <b>Offset</b> until kick+snare match what you hear.
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="pad" id="pad1"><div class="label">KICK</div><div class="sub">a • id 1</div></div>
+    <div class="pad" id="pad3"><div class="label">SNARE</div><div class="sub">s • id 3</div></div>
+    <div class="pad" id="pad5"><div class="label">HI-HAT</div><div class="sub">k • id 5</div></div>
+    <div class="pad" id="pad6"><div class="label">CRASH</div><div class="sub">l • id 6</div></div>
+  </div>
+
+  <script>
+    const EVENTS = [{"t_ms": 1146, "drum": 1}, {"t_ms": 1215, "drum": 5}, {"t_ms": 1406, "drum": 1}, {"t_ms": 1653, "drum": 3}, {"t_ms": 1685, "drum": 6}, {"t_ms": 1888, "drum": 5}, {"t_ms": 2144, "drum": 1}, {"t_ms": 2151, "drum": 5}, {"t_ms": 2360, "drum": 1}, {"t_ms": 2380, "drum": 5}, {"t_ms": 2609, "drum": 3}, {"t_ms": 2621, "drum": 5}, {"t_ms": 2864, "drum": 5}, {"t_ms": 3089, "drum": 1}, {"t_ms": 3113, "drum": 5}, {"t_ms": 3344, "drum": 1}, {"t_ms": 3350, "drum": 5}, {"t_ms": 3588, "drum": 3}, {"t_ms": 3608, "drum": 5}, {"t_ms": 3824, "drum": 5}, {"t_ms": 4080, "drum": 5}, {"t_ms": 4080, "drum": 1}, {"t_ms": 4304, "drum": 1}, {"t_ms": 4330, "drum": 5}, {"t_ms": 4579, "drum": 3}, {"t_ms": 4579, "drum": 5}, {"t_ms": 4801, "drum": 5}, {"t_ms": 5066, "drum": 1}, {"t_ms": 5084, "drum": 5}, {"t_ms": 5302, "drum": 5}, {"t_ms": 5319, "drum": 1}, {"t_ms": 5542, "drum": 3}, {"t_ms": 5548, "drum": 5}, {"t_ms": 5814, "drum": 5}, {"t_ms": 6036, "drum": 1}, {"t_ms": 6043, "drum": 5}, {"t_ms": 6261, "drum": 1}, {"t_ms": 6272, "drum": 5}, {"t_ms": 6513, "drum": 3}, {"t_ms": 6532, "drum": 5}, {"t_ms": 6753, "drum": 5}, {"t_ms": 7009, "drum": 5}, {"t_ms": 7015, "drum": 1}, {"t_ms": 7235, "drum": 1}, {"t_ms": 7240, "drum": 5}, {"t_ms": 7466, "drum": 5}, {"t_ms": 7472, "drum": 3}, {"t_ms": 7693, "drum": 5}, {"t_ms": 8002, "drum": 1}, {"t_ms": 8027, "drum": 3}, {"t_ms": 8197, "drum": 3}, {"t_ms": 8252, "drum": 1}, {"t_ms": 8395, "drum": 3}, {"t_ms": 8514, "drum": 1}, {"t_ms": 8606, "drum": 3}, {"t_ms": 8741, "drum": 1}, {"t_ms": 8790, "drum": 3}, {"t_ms": 8893, "drum": 3}, {"t_ms": 9027, "drum": 1}, {"t_ms": 9033, "drum": 3}, {"t_ms": 9137, "drum": 3}, {"t_ms": 9200, "drum": 3}, {"t_ms": 9263, "drum": 1}, {"t_ms": 9350, "drum": 3}, {"t_ms": 9497, "drum": 1}, {"t_ms": 9572, "drum": 3}, {"t_ms": 9752, "drum": 1}, {"t_ms": 10002, "drum": 1}, {"t_ms": 10015, "drum": 3}, {"t_ms": 10128, "drum": 3}, {"t_ms": 10226, "drum": 3}, {"t_ms": 10239, "drum": 1}, {"t_ms": 10435, "drum": 3}, {"t_ms": 10460, "drum": 1}, {"t_ms": 10565, "drum": 3}, {"t_ms": 10672, "drum": 3}, {"t_ms": 10689, "drum": 1}, {"t_ms": 10793, "drum": 3}, {"t_ms": 10892, "drum": 3}, {"t_ms": 10922, "drum": 1}, {"t_ms": 11121, "drum": 3}, {"t_ms": 11158, "drum": 1}, {"t_ms": 11350, "drum": 3}, {"t_ms": 11357, "drum": 1}, {"t_ms": 11580, "drum": 3}, {"t_ms": 11991, "drum": 1}, {"t_ms": 12191, "drum": 1}, {"t_ms": 12263, "drum": 5}, {"t_ms": 12400, "drum": 3}, {"t_ms": 12643, "drum": 5}, {"t_ms": 12662, "drum": 1}, {"t_ms": 13145, "drum": 1}, {"t_ms": 13163, "drum": 5}, {"t_ms": 13369, "drum": 3}, {"t_ms": 13381, "drum": 6}, {"t_ms": 13578, "drum": 1}, {"t_ms": 13597, "drum": 5}, {"t_ms": 13832, "drum": 5}, {"t_ms": 14040, "drum": 5}, {"t_ms": 14301, "drum": 3}, {"t_ms": 14327, "drum": 5}, {"t_ms": 14530, "drum": 5}, {"t_ms": 14778, "drum": 1}, {"t_ms": 14802, "drum": 5}, {"t_ms": 15018, "drum": 3}, {"t_ms": 15037, "drum": 5}, {"t_ms": 15248, "drum": 1}, {"t_ms": 15267, "drum": 5}, {"t_ms": 15510, "drum": 5}, {"t_ms": 15510, "drum": 3}, {"t_ms": 15744, "drum": 1}, {"t_ms": 15751, "drum": 6}, {"t_ms": 15961, "drum": 5}, {"t_ms": 16219, "drum": 3}, {"t_ms": 16232, "drum": 5}, {"t_ms": 16462, "drum": 5}, {"t_ms": 16706, "drum": 5}, {"t_ms": 16719, "drum": 1}, {"t_ms": 16932, "drum": 1}, {"t_ms": 16939, "drum": 5}, {"t_ms": 17188, "drum": 3}, {"t_ms": 17193, "drum": 5}, {"t_ms": 17409, "drum": 5}, {"t_ms": 17662, "drum": 1}, {"t_ms": 17679, "drum": 5}, {"t_ms": 17893, "drum": 1}, {"t_ms": 17899, "drum": 5}, {"t_ms": 18130, "drum": 3}, {"t_ms": 18136, "drum": 5}, {"t_ms": 18356, "drum": 1}, {"t_ms": 18369, "drum": 5}, {"t_ms": 18592, "drum": 5}, {"t_ms": 18818, "drum": 5}, {"t_ms": 18893, "drum": 1}, {"t_ms": 19118, "drum": 5}, {"t_ms": 19131, "drum": 3}, {"t_ms": 19364, "drum": 5}, {"t_ms": 19612, "drum": 5}, {"t_ms": 19628, "drum": 1}, {"t_ms": 19837, "drum": 1}, {"t_ms": 19850, "drum": 5}, {"t_ms": 20088, "drum": 3}, {"t_ms": 20105, "drum": 5}, {"t_ms": 20335, "drum": 5}, {"t_ms": 20583, "drum": 1}, {"t_ms": 20589, "drum": 5}, {"t_ms": 20804, "drum": 1}, {"t_ms": 20810, "drum": 5}, {"t_ms": 21048, "drum": 3}, {"t_ms": 21060, "drum": 5}, {"t_ms": 21292, "drum": 5}, {"t_ms": 21517, "drum": 1}, {"t_ms": 21523, "drum": 5}, {"t_ms": 21732, "drum": 1}, {"t_ms": 21751, "drum": 5}, {"t_ms": 21979, "drum": 3}, {"t_ms": 21985, "drum": 5}, {"t_ms": 22216, "drum": 1}, {"t_ms": 22217, "drum": 5}, {"t_ms": 22444, "drum": 5}, {"t_ms": 22709, "drum": 5}, {"t_ms": 22722, "drum": 1}, {"t_ms": 22964, "drum": 3}, {"t_ms": 22971, "drum": 5}, {"t_ms": 23201, "drum": 5}, {"t_ms": 23443, "drum": 1}, {"t_ms": 23461, "drum": 5}, {"t_ms": 23672, "drum": 1}, {"t_ms": 23691, "drum": 5}, {"t_ms": 23932, "drum": 5}, {"t_ms": 23939, "drum": 3}, {"t_ms": 24157, "drum": 5}, {"t_ms": 24415, "drum": 1}, {"t_ms": 24428, "drum": 5}, {"t_ms": 24637, "drum": 1}, {"t_ms": 24650, "drum": 5}, {"t_ms": 24885, "drum": 3}, {"t_ms": 24891, "drum": 5}, {"t_ms": 25103, "drum": 5}, {"t_ms": 25359, "drum": 1}, {"t_ms": 25365, "drum": 5}, {"t_ms": 25580, "drum": 1}, {"t_ms": 25593, "drum": 5}, {"t_ms": 25811, "drum": 3}, {"t_ms": 25824, "drum": 5}, {"t_ms": 26046, "drum": 5}, {"t_ms": 26058, "drum": 1}, {"t_ms": 26294, "drum": 5}, {"t_ms": 26556, "drum": 5}, {"t_ms": 26569, "drum": 1}, {"t_ms": 26819, "drum": 3}, {"t_ms": 26824, "drum": 5}, {"t_ms": 27038, "drum": 5}, {"t_ms": 27301, "drum": 1}, {"t_ms": 27307, "drum": 5}, {"t_ms": 27550, "drum": 5}, {"t_ms": 27554, "drum": 1}, {"t_ms": 27765, "drum": 3}, {"t_ms": 27777, "drum": 5}, {"t_ms": 28008, "drum": 5}, {"t_ms": 28246, "drum": 1}, {"t_ms": 28259, "drum": 5}, {"t_ms": 28470, "drum": 1}, {"t_ms": 28495, "drum": 5}, {"t_ms": 28706, "drum": 3}, {"t_ms": 28718, "drum": 5}, {"t_ms": 28926, "drum": 5}, {"t_ms": 29179, "drum": 1}, {"t_ms": 29186, "drum": 5}, {"t_ms": 29414, "drum": 5}, {"t_ms": 29420, "drum": 1}, {"t_ms": 29673, "drum": 3}, {"t_ms": 29685, "drum": 5}, {"t_ms": 29875, "drum": 1}, {"t_ms": 29894, "drum": 5}, {"t_ms": 30160, "drum": 3}, {"t_ms": 30160, "drum": 5}, {"t_ms": 30392, "drum": 1}, {"t_ms": 30399, "drum": 5}, {"t_ms": 30660, "drum": 5}, {"t_ms": 30671, "drum": 3}, {"t_ms": 30894, "drum": 3}, {"t_ms": 30967, "drum": 5}, {"t_ms": 31111, "drum": 1}, {"t_ms": 31173, "drum": 5}, {"t_ms": 31354, "drum": 5}, {"t_ms": 31621, "drum": 3}, {"t_ms": 31628, "drum": 5}, {"t_ms": 31846, "drum": 5}, {"t_ms": 32112, "drum": 1}, {"t_ms": 32118, "drum": 5}, {"t_ms": 32337, "drum": 1}, {"t_ms": 32349, "drum": 5}, {"t_ms": 32585, "drum": 5}, {"t_ms": 32585, "drum": 3}, {"t_ms": 32797, "drum": 5}, {"t_ms": 33063, "drum": 1}, {"t_ms": 33069, "drum": 5}, {"t_ms": 33291, "drum": 1}, {"t_ms": 33297, "drum": 5}, {"t_ms": 33534, "drum": 3}, {"t_ms": 33547, "drum": 5}, {"t_ms": 33790, "drum": 1}, {"t_ms": 33797, "drum": 5}, {"t_ms": 34021, "drum": 5}, {"t_ms": 34256, "drum": 5}, {"t_ms": 34262, "drum": 1}, {"t_ms": 34517, "drum": 3}, {"t_ms": 34529, "drum": 5}, {"t_ms": 34732, "drum": 5}, {"t_ms": 34976, "drum": 5}, {"t_ms": 34982, "drum": 1}, {"t_ms": 35199, "drum": 1}, {"t_ms": 35218, "drum": 5}, {"t_ms": 35463, "drum": 5}, {"t_ms": 35469, "drum": 3}, {"t_ms": 35700, "drum": 5}, {"t_ms": 35926, "drum": 1}, {"t_ms": 35945, "drum": 5}, {"t_ms": 36163, "drum": 1}, {"t_ms": 36170, "drum": 5}, {"t_ms": 36417, "drum": 5}, {"t_ms": 36423, "drum": 3}, {"t_ms": 36626, "drum": 5}, {"t_ms": 36861, "drum": 1}, {"t_ms": 36879, "drum": 5}, {"t_ms": 37108, "drum": 1}, {"t_ms": 37109, "drum": 5}, {"t_ms": 37386, "drum": 5}, {"t_ms": 37386, "drum": 3}, {"t_ms": 37589, "drum": 5}, {"t_ms": 37600, "drum": 1}, {"t_ms": 37824, "drum": 5}, {"t_ms": 38076, "drum": 5}, {"t_ms": 38102, "drum": 1}, {"t_ms": 38334, "drum": 5}, {"t_ms": 38334, "drum": 3}, {"t_ms": 38549, "drum": 5}, {"t_ms": 38796, "drum": 1}, {"t_ms": 38808, "drum": 5}, {"t_ms": 39031, "drum": 1}, {"t_ms": 39036, "drum": 5}, {"t_ms": 39297, "drum": 3}, {"t_ms": 39304, "drum": 5}, {"t_ms": 39516, "drum": 5}, {"t_ms": 39760, "drum": 1}, {"t_ms": 39779, "drum": 5}, {"t_ms": 39991, "drum": 1}, {"t_ms": 39997, "drum": 5}, {"t_ms": 40245, "drum": 5}, {"t_ms": 40251, "drum": 3}, {"t_ms": 40479, "drum": 5}, {"t_ms": 40715, "drum": 1}, {"t_ms": 40722, "drum": 5}, {"t_ms": 40949, "drum": 1}, {"t_ms": 40949, "drum": 5}, {"t_ms": 41184, "drum": 5}, {"t_ms": 41196, "drum": 3}, {"t_ms": 41438, "drum": 5}, {"t_ms": 41444, "drum": 1}, {"t_ms": 41650, "drum": 5}, {"t_ms": 41926, "drum": 5}, {"t_ms": 41945, "drum": 1}, {"t_ms": 42179, "drum": 5}, {"t_ms": 42186, "drum": 3}, {"t_ms": 42394, "drum": 5}, {"t_ms": 42654, "drum": 1}, {"t_ms": 42661, "drum": 5}, {"t_ms": 42884, "drum": 1}, {"t_ms": 42891, "drum": 5}, {"t_ms": 43142, "drum": 5}, {"t_ms": 43148, "drum": 3}, {"t_ms": 43343, "drum": 5}, {"t_ms": 43593, "drum": 1}, {"t_ms": 43612, "drum": 5}, {"t_ms": 43850, "drum": 1}, {"t_ms": 43850, "drum": 5}, {"t_ms": 44079, "drum": 5}, {"t_ms": 44090, "drum": 3}, {"t_ms": 44295, "drum": 5}, {"t_ms": 44547, "drum": 1}, {"t_ms": 44553, "drum": 5}, {"t_ms": 44785, "drum": 1}, {"t_ms": 44792, "drum": 5}, {"t_ms": 45015, "drum": 5}, {"t_ms": 45034, "drum": 3}, {"t_ms": 45264, "drum": 3}, {"t_ms": 45363, "drum": 5}, {"t_ms": 45505, "drum": 3}, {"t_ms": 45738, "drum": 3}, {"t_ms": 45847, "drum": 5}, {"t_ms": 45963, "drum": 3}, {"t_ms": 46063, "drum": 5}, {"t_ms": 46180, "drum": 3}, {"t_ms": 46278, "drum": 5}, {"t_ms": 46438, "drum": 6}, {"t_ms": 46663, "drum": 5}, {"t_ms": 46914, "drum": 1}, {"t_ms": 46926, "drum": 5}, {"t_ms": 47142, "drum": 5}, {"t_ms": 47425, "drum": 1}, {"t_ms": 47436, "drum": 5}, {"t_ms": 47660, "drum": 5}, {"t_ms": 47899, "drum": 5}, {"t_ms": 47899, "drum": 3}, {"t_ms": 48146, "drum": 5}, {"t_ms": 48396, "drum": 1}, {"t_ms": 48409, "drum": 5}, {"t_ms": 48624, "drum": 1}, {"t_ms": 48637, "drum": 5}, {"t_ms": 48870, "drum": 5}, {"t_ms": 48877, "drum": 3}, {"t_ms": 49103, "drum": 5}, {"t_ms": 49352, "drum": 1}, {"t_ms": 49371, "drum": 5}, {"t_ms": 49580, "drum": 1}, {"t_ms": 49586, "drum": 5}, {"t_ms": 49821, "drum": 5}, {"t_ms": 49827, "drum": 3}, {"t_ms": 50033, "drum": 5}, {"t_ms": 50273, "drum": 1}, {"t_ms": 50286, "drum": 5}, {"t_ms": 50506, "drum": 5}, {"t_ms": 50537, "drum": 3}, {"t_ms": 50754, "drum": 6}, {"t_ms": 50754, "drum": 3}, {"t_ms": 50985, "drum": 5}, {"t_ms": 51246, "drum": 1}, {"t_ms": 51272, "drum": 5}, {"t_ms": 51481, "drum": 1}, {"t_ms": 51486, "drum": 5}, {"t_ms": 51724, "drum": 5}, {"t_ms": 51731, "drum": 3}, {"t_ms": 51964, "drum": 5}, {"t_ms": 52212, "drum": 1}, {"t_ms": 52224, "drum": 5}, {"t_ms": 52447, "drum": 1}, {"t_ms": 52459, "drum": 5}, {"t_ms": 52696, "drum": 5}, {"t_ms": 52701, "drum": 3}, {"t_ms": 52914, "drum": 5}, {"t_ms": 53174, "drum": 1}, {"t_ms": 53187, "drum": 5}, {"t_ms": 53405, "drum": 1}, {"t_ms": 53412, "drum": 5}, {"t_ms": 53651, "drum": 5}, {"t_ms": 53658, "drum": 3}, {"t_ms": 53880, "drum": 5}, {"t_ms": 54143, "drum": 1}, {"t_ms": 54143, "drum": 5}, {"t_ms": 54365, "drum": 1}, {"t_ms": 54365, "drum": 5}, {"t_ms": 54627, "drum": 3}, {"t_ms": 54633, "drum": 5}, {"t_ms": 54865, "drum": 5}, {"t_ms": 55109, "drum": 1}, {"t_ms": 55346, "drum": 1}, {"t_ms": 55352, "drum": 5}, {"t_ms": 55595, "drum": 5}, {"t_ms": 55608, "drum": 3}, {"t_ms": 55802, "drum": 5}, {"t_ms": 56090, "drum": 1}, {"t_ms": 56096, "drum": 5}, {"t_ms": 56322, "drum": 1}, {"t_ms": 56328, "drum": 5}, {"t_ms": 56564, "drum": 5}, {"t_ms": 56571, "drum": 3}, {"t_ms": 56783, "drum": 5}, {"t_ms": 57042, "drum": 1}, {"t_ms": 57053, "drum": 5}, {"t_ms": 57273, "drum": 5}, {"t_ms": 57280, "drum": 1}, {"t_ms": 57513, "drum": 5}, {"t_ms": 57519, "drum": 3}, {"t_ms": 57731, "drum": 5}, {"t_ms": 57978, "drum": 3}, {"t_ms": 58004, "drum": 5}, {"t_ms": 58221, "drum": 3}, {"t_ms": 58303, "drum": 5}, {"t_ms": 58452, "drum": 3}, {"t_ms": 58707, "drum": 3}, {"t_ms": 58980, "drum": 3}, {"t_ms": 59406, "drum": 1}, {"t_ms": 59430, "drum": 5}, {"t_ms": 59648, "drum": 3}, {"t_ms": 59660, "drum": 5}, {"t_ms": 59899, "drum": 5}, {"t_ms": 60131, "drum": 1}, {"t_ms": 60138, "drum": 5}, {"t_ms": 60405, "drum": 5}, {"t_ms": 60410, "drum": 3}, {"t_ms": 60614, "drum": 1}, {"t_ms": 60622, "drum": 5}, {"t_ms": 60862, "drum": 3}, {"t_ms": 61071, "drum": 5}, {"t_ms": 61313, "drum": 3}, {"t_ms": 61547, "drum": 5}, {"t_ms": 61784, "drum": 6}];
+    const JSON_NAME = "brandy-1350.json";
+    const FIRST_T_MS = 1146;
+
+    const PAD = {
+      1: document.getElementById("pad1"),
+      3: document.getElementById("pad3"),
+      5: document.getElementById("pad5"),
+      6: document.getElementById("pad6"),
+    };
+
+    const statusEl = document.getElementById("status");
+    const loadBtn = document.getElementById("loadBtn");
+    const startBtn = document.getElementById("startBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+    const resetBtn = document.getElementById("resetBtn");
+
+    const offsetSlider = document.getElementById("offset");
+    const flashSlider = document.getElementById("flash");
+    const offsetVal = document.getElementById("offsetVal");
+    const flashVal = document.getElementById("flashVal");
+
+    offsetVal.textContent = offsetSlider.value;
+    flashVal.textContent = flashSlider.value;
+
+    offsetSlider.addEventListener("input", () => offsetVal.textContent = offsetSlider.value);
+    flashSlider.addEventListener("input", () => flashVal.textContent = flashSlider.value);
+
+    function parseYouTubeId(input) {
+      const s = input.trim();
+      if (!s) return null;
+      if (/^[a-zA-Z0-9_-]{11}$/.test(s)) return s;
+
+      const vMatch = s.match(/[?&]v=([^&]+)/);
+      if (vMatch) return vMatch[1];
+
+      const shortMatch = s.match(/youtu\.be\/([^?&]+)/);
+      if (shortMatch) return shortMatch[1];
+
+      const embedMatch = s.match(/\/embed\/([^?&]+)/);
+      if (embedMatch) return embedMatch[1];
+
+      return null;
+    }
+
+    function flashPad(drumId, flashMs) {
+      const el = PAD[drumId];
+      if (!el) return;
+      el.classList.add("lit");
+      setTimeout(() => el.classList.remove("lit"), flashMs);
+    }
+
+    let player = null;
+    let tickHandle = null;
+    let eventIdx = 0;
+    let playing = false;
+
+    function resetCueState() {
+      eventIdx = 0;
+    }
+
+    function tick() {
+      if (!player || !playing) return;
+
+      const tSec = player.getCurrentTime ? player.getCurrentTime() : 0;
+      const tMs = Math.floor(tSec * 1000);
+      const offsetMs = parseInt(offsetSlider.value, 10);
+      const flashMs = parseInt(flashSlider.value, 10);
+
+      const chartMs = tMs + offsetMs;
+
+      while (eventIdx < EVENTS.length && EVENTS[eventIdx].t_ms <= chartMs) {
+        flashPad(EVENTS[eventIdx].drum, flashMs);
+        eventIdx++;
+      }
+
+      const next = (eventIdx < EVENTS.length) ? EVENTS[eventIdx].t_ms : null;
+      if (next !== null) {
+        statusEl.textContent =
+          `JSON=${JSON_NAME} (first=${FIRST_T_MS}ms) | video=${tMs}ms, chart=${chartMs}ms | next in ${Math.max(0, next - chartMs)}ms | fired ${eventIdx}/${EVENTS.length}`;
+      } else {
+        statusEl.textContent = `Done: fired all ${EVENTS.length} events. Hit Reset to replay.`;
+      }
+    }
+
+    const tag = document.createElement('script');
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(tag);
+
+    window.onYouTubeIframeAPIReady = function() {
+      statusEl.textContent = `YouTube API ready. Loaded ${JSON_NAME} (first=${FIRST_T_MS}ms). Load a video.`;
+    }
+
+    function createPlayer(videoId) {
+      if (player && player.destroy) player.destroy();
+
+      player = new YT.Player('player', {
+        height: '100%',
+        width: '100%',
+        videoId: videoId,
+        playerVars: { modestbranding: 1, rel: 0 },
+        events: {
+          'onReady': () => {
+            startBtn.disabled = false;
+            pauseBtn.disabled = false;
+            resetBtn.disabled = false;
+            statusEl.textContent = `Video loaded. Press Start. (JSON first event = ${FIRST_T_MS}ms)`;
+          },
+          'onStateChange': (e) => {
+            if (e.data === 0) playing = false;
+          }
+        }
+      });
+    }
+
+    loadBtn.addEventListener("click", () => {
+      const input = document.getElementById("ytInput").value;
+      const vid = parseYouTubeId(input);
+      if (!vid) {
+        statusEl.textContent = "Couldn’t parse YouTube ID. Paste a normal YouTube URL or the 11-char ID.";
+        return;
+      }
+      if (typeof YT === "undefined" || !YT.Player) {
+        statusEl.textContent = "YouTube API not loaded yet. Wait 1–2 seconds and try again.";
+        return;
+      }
+      resetCueState();
+      createPlayer(vid);
+    });
+
+    startBtn.addEventListener("click", () => {
+      if (!player) return;
+      playing = true;
+      player.playVideo();
+      if (!tickHandle) tickHandle = setInterval(tick, 16);
+    });
+
+    pauseBtn.addEventListener("click", () => {
+      if (!player) return;
+      playing = false;
+      player.pauseVideo();
+    });
+
+    resetBtn.addEventListener("click", () => {
+      if (!player) return;
+      playing = false;
+      player.pauseVideo();
+      player.seekTo(0, true);
+      resetCueState();
+      statusEl.textContent = `Reset to 0. Press Start. (JSON first event = ${FIRST_T_MS}ms)`;
+    });
+  </script>
+</body>
+</html>

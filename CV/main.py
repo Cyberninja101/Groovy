@@ -1080,8 +1080,16 @@ def detect_stick_tip(
         cy = float(m["m01"] / m["m00"])
         candidates.append((area, np.array([cx, cy], dtype=np.float32)))
 
+    debug_view: Optional[np.ndarray] = None
+    if cfg.stick_debug:
+        debug_view = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        for cnt in contours:
+            cv2.drawContours(debug_view, [cnt], -1, (255, 128, 64), 1, cv2.LINE_AA)
+
     if not candidates:
-        return None, (mask if cfg.stick_debug else None)
+        if debug_view is not None:
+            debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
+        return None, debug_view
 
     picked_small: Optional[np.ndarray] = None
     if prev_tip_full is None:
@@ -1101,10 +1109,14 @@ def detect_stick_tip(
             # If this is the only candidate, allow large jump reacquisition.
             picked_small = candidates_with_dist[0][2]
         else:
-            return None, (mask if cfg.stick_debug else None)
+            if debug_view is not None:
+                debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
+            return None, debug_view
 
     if picked_small is None:
-        return None, (mask if cfg.stick_debug else None)
+        if debug_view is not None:
+            debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
+        return None, debug_view
 
     tip_full = picked_small / scale
     tip_full = np.asarray(tip_full, dtype=np.float32).reshape(2)
@@ -1114,7 +1126,17 @@ def detect_stick_tip(
         a = float(clamp01(cfg.stick_smooth_alpha))
         tip_full = (1.0 - a) * prev + a * tip_full
 
-    return tip_full, (mask if cfg.stick_debug else None)
+    if debug_view is not None:
+        for _area, cxy in candidates:
+            cx_i = int(round(float(cxy[0])))
+            cy_i = int(round(float(cxy[1])))
+            cv2.circle(debug_view, (cx_i, cy_i), 4, (128, 128, 255), 1, cv2.LINE_AA)
+        px = int(round(float(picked_small[0])))
+        py = int(round(float(picked_small[1])))
+        cv2.circle(debug_view, (px, py), 6, (0, 255, 0), 2, cv2.LINE_AA)
+        debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
+
+    return tip_full, debug_view
 
 
 def polygon_area(pts_4x2: np.ndarray) -> float:
@@ -1827,6 +1849,9 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.frame_w)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.frame_h)
 
+    cv2.namedWindow("drum_overlay", cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty("drum_overlay", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
     detector = make_aruco_detector(cfg)
 
     mtx = dist = None
@@ -1957,7 +1982,7 @@ def main():
             frame, frame_seq = capture.get_latest()
             if frame is None or frame_seq == last_frame_seq:
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
+                if key == ord("q") or key == 27:
                     break
                 time.sleep(0.001)
                 continue
@@ -2343,11 +2368,10 @@ def main():
                     fps_last_t = now_t
                 draw_fps(frame, fps_value)
 
-            display_frame = cv2.resize(frame, (480, 320), interpolation=cv2.INTER_AREA)
-            cv2.imshow("drum_overlay", display_frame)
+            cv2.imshow("drum_overlay", frame)
             key = cv2.waitKey(1) & 0xFF
 
-            if key == ord("q"):
+            if key == ord("q") or key == 27:
                 break
             if key == ord("s"):
                 if mode_blocked:

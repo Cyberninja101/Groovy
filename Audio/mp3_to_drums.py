@@ -248,6 +248,7 @@ class DrumClassifier:
 
         # Crash tail heuristic: compare high-band energy in tail vs attack
         crash_tail_ratio = 0.0
+        high_attack = 0.0
         if mag_tail is not None and mag_tail.size > 0:
             tail_sum = np.sum(mag_tail, axis=1)
             high_attack = self._band_sum(attack_sum, self.cfg.high_low_hz, self.cfg.high_high_hz) + 1e-9

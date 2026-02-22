@@ -18,7 +18,7 @@ import numpy as np
 @dataclass(frozen=True)
 class Config:
     # Song
-    song_path: str = "Audio/brandy-1350.json"
+    song_path: str = "App/backend/beatmaps/seven_nation_army.json"
 
     # Song uses numeric drum IDs, map those to human names
     drum_id_to_name: Dict[int, str] = field(default_factory=dict)
@@ -85,7 +85,7 @@ class Config:
 
     # Camera-only hit detection tuning
     hit_z_thresh_m: float = 0.015
-    approach_speed_thresh_mps: float = 0.35
+    approach_speed_thresh_mps: float = 0.1
     cooldown_ms: int = 100
     rearm_z_m: float = 0.04
 
@@ -148,7 +148,7 @@ def make_config(args: argparse.Namespace) -> Config:
             "CRASH": 4,
         },
         drum_name_to_highlight_r_m={
-            "SNARE": 0.08,
+            "SNARE": 0.10,
             "BASS": 0.10,
             "HIHAT": 0.07,
             "CRASH": 0.07,
@@ -1483,33 +1483,31 @@ def update_hit_states(
             vr = (radial - prev_radial) / dt_s
 
         drum_r_m = float(marker_id_to_radius_m.get(mid, cfg.drum_highlight_r_m))
-        rearm_margin = max(0.005, float(cfg.rearm_z_m))
+        # Rearm sooner to allow repeated hits without forcing a large outward reset.
+        rearm_margin = max(0.003, 0.5 * float(cfg.rearm_z_m))
         enter_margin = max(0.003, min(float(cfg.rearm_z_m), 0.35 * drum_r_m))
-        generous_margin = max(0.006, 0.35 * enter_margin)
+        # Generous radial acceptance so staying inside the target area is enough.
+        generous_margin = max(0.012, 0.60 * enter_margin)
         hit_radius = drum_r_m + generous_margin
-        z_tol = max(0.03, 2.0 * float(cfg.hit_z_thresh_m))
+        z_tol = max(0.06, 4.0 * float(cfg.hit_z_thresh_m))
         z_ok = abs(z_local) <= z_tol
         if radial > (drum_r_m + rearm_margin):
             state.armed = True
 
         cooldown_ok = (now_wall_ms - state.last_hit_ms) >= int(cfg.cooldown_ms)
-        crossing = (prev_radial is not None) and (prev_radial > (drum_r_m + enter_margin)) and (radial <= hit_radius)
         radial_delta = 0.0 if prev_radial is None else float(prev_radial - radial)
-        speed_ok = (vr < -cfg.approach_speed_thresh_mps) or (radial_delta > max(0.004, 0.15 * enter_margin))
-        moving_ok = radial_delta > -max(0.003, 0.20 * enter_margin)
-        inside_ok = (prev_radial is not None) and (radial <= hit_radius)
+        inside_ok = radial <= hit_radius
         candidate_hit = (
             state.armed
             and inside_ok
-            and (crossing or moving_ok or speed_ok)
             and z_ok
             and cooldown_ok
         )
 
         if candidate_hit:
-            # Prefer the marker where the stick tip is deeper inside the target ring.
+            # Prefer whichever marker contains the tip deepest inside the target area.
             inside_depth = max(0.0, hit_radius - radial)
-            score = (40.0 * inside_depth) + (2.0 * max(0.0, radial_delta)) + (0.05 * max(0.0, -vr))
+            score = (120.0 * inside_depth) + (0.5 * max(0.0, radial_delta)) - (0.05 * abs(z_local))
             candidates.append((int(mid), score, radial))
 
         if closest_info is None or radial < closest_info[2]:

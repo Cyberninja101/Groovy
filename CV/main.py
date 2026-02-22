@@ -148,10 +148,10 @@ def make_config(args: argparse.Namespace) -> Config:
             "CRASH": 4,
         },
         drum_name_to_highlight_r_m={
-            "SNARE": 0.28,
+            "SNARE": 0.56,
             "BASS": 0.10,
-            "HIHAT": 0.32,
-            "CRASH": 0.32,
+            "HIHAT": 0.64,
+            "CRASH": 0.64,
         },
     )
 

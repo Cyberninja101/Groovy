@@ -58,6 +58,24 @@ def stop_cv_process() -> None:
     cv_process = None
 
 
+def parse_speed(data: Dict[str, Any], beatmap: Dict[str, Any]) -> float:
+    raw = data.get("speed", beatmap.get("speed", 1.0))
+    try:
+        return float(raw)
+    except Exception:
+        return 1.0
+
+
+def build_speed_mode_args(speed: float) -> List[str]:
+    # speed == -1 means "train mode" (one note at a time).
+    if abs(speed + 1.0) < 1e-9:
+        return ["--mode", "train", "--stick-track"]
+
+    # Normal timeline playback.
+    safe_speed = speed if speed > 0.0 else 1.0
+    return ["--mode", "play", "--speed", f"{safe_speed:.3f}"]
+
+
 def start_cv_process(extra_args: Optional[List[str]] = None) -> subprocess.Popen:
     args = [sys.executable, str(CV_MAIN_PATH), *DEFAULT_CV_ARGS]
     if extra_args:
@@ -88,17 +106,23 @@ async def handler(ws):
                 raise ValueError("Request must be a JSON object.")
 
             beatmap = extract_beatmap_payload(data)
+            speed = parse_speed(data, beatmap)
+            speed_mode_args = build_speed_mode_args(speed)
             cv_args = data.get("cv_args")
             if cv_args is not None and not (
                 isinstance(cv_args, list) and all(isinstance(x, str) for x in cv_args)
             ):
                 raise ValueError("'cv_args' must be a list of strings when provided.")
+            effective_cv_args = list(speed_mode_args)
+            if cv_args:
+                # Let caller overrides win by appending them last.
+                effective_cv_args.extend(cv_args)
 
             async with process_lock:
                 save_payload(beatmap)
                 stop_cv_process()
                 global cv_process
-                cv_process = start_cv_process(cv_args)
+                cv_process = start_cv_process(effective_cv_args)
 
             await ws.send(
                 json.dumps(
@@ -106,6 +130,9 @@ async def handler(ws):
                         "ok": True,
                         "saved": str(LATEST_JSON_PATH),
                         "song_path": str(DEFAULT_SONG_PATH),
+                        "requested_speed": speed,
+                        "mode": ("train" if abs(speed + 1.0) < 1e-9 else "play"),
+                        "cv_args": effective_cv_args,
                         "cv_started": True,
                         "pid": cv_process.pid if cv_process else None,
                     }

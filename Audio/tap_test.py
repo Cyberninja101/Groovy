@@ -20,7 +20,7 @@ def run(stdscr):
     events = []
     running = False
     t0 = None
-    title = "brandy_clip"
+    title = "stacys_gene"
     out_path = Path(f"{title}.json")
 
     def now_ms():

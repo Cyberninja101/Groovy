@@ -2343,7 +2343,8 @@ def main():
                     fps_last_t = now_t
                 draw_fps(frame, fps_value)
 
-            cv2.imshow("drum_overlay", frame)
+            display_frame = cv2.resize(frame, (480, 320), interpolation=cv2.INTER_AREA)
+            cv2.imshow("drum_overlay", display_frame)
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("q"):

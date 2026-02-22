@@ -697,6 +697,60 @@ def draw_center_popup(frame: np.ndarray, text: str, color: Tuple[int, int, int])
     cv2.putText(frame, text, (tx, ty), font, scale, color, thick, cv2.LINE_AA)
 
 
+def draw_auto_start_countdown(frame: np.ndarray, seconds_left: int) -> None:
+    h, w = frame.shape[:2]
+    sec_text = str(max(0, int(seconds_left)))
+    label_text = "STARTING IN"
+
+    label_scale = 1.0
+    label_thick = 2
+    num_scale = max(2.8, min(7.0, min(w / 260.0, h / 120.0)))
+    num_thick = max(4, int(round(num_scale * 0.9)))
+
+    (lw, lh), lb = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, label_scale, label_thick)
+    (nw, nh), nb = cv2.getTextSize(sec_text, cv2.FONT_HERSHEY_SIMPLEX, num_scale, num_thick)
+
+    pad_x = 28
+    pad_y = 22
+    gap = 14
+    box_w = max(lw, nw) + (2 * pad_x)
+    box_h = lh + lb + nh + nb + gap + (2 * pad_y)
+
+    x0 = max(0, (w - box_w) // 2)
+    y0 = max(0, (h - box_h) // 2)
+    x1 = min(w, x0 + box_w)
+    y1 = min(h, y0 + box_h)
+
+    alpha_fill_rect(frame, x0, y0, x1, y1, (0, 0, 0), 0.64)
+    cv2.rectangle(frame, (x0, y0), (x1, y1), (0, 255, 255), 2, cv2.LINE_AA)
+
+    lx = x0 + (box_w - lw) // 2
+    ly = y0 + pad_y + lh
+    nx = x0 + (box_w - nw) // 2
+    ny = ly + lb + gap + nh
+
+    cv2.putText(
+        frame,
+        label_text,
+        (lx, ly),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        label_scale,
+        (255, 255, 255),
+        label_thick,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        sec_text,
+        (nx, ny),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        num_scale,
+        (0, 255, 255),
+        num_thick,
+        cv2.LINE_AA,
+    )
+
+
 def draw_2d_ring(
     frame: np.ndarray,
     x: int,
@@ -2193,6 +2247,7 @@ def main():
             # ------------------------------------------------------------
             cue_text = f"{title} | Press 's' to start"
             cue_ok = True
+            auto_start_seconds_left: Optional[int] = None
             next_group: List[dict] = []
             next_t: Optional[int] = None
             dt_next: Optional[int] = None
@@ -2241,6 +2296,7 @@ def main():
             if (not running) and (auto_start_at_t is not None) and (not mode_blocked):
                 sec_left = max(0, int(np.ceil(auto_start_at_t - loop_t)))
                 cue_text = f"{title} | mode={cfg.mode} | AUTO START IN {sec_left}s"
+                auto_start_seconds_left = sec_left
 
             # ------------------------------------------------------------
             # Draw detections: base green ring + pulses from per-marker queues
@@ -2408,6 +2464,8 @@ def main():
                         cue_text = cue_text + f" | NO 3D POSE: {', '.join(missing_names)}"
 
             draw_banner(frame, cue_text, ok=cue_ok)
+            if auto_start_seconds_left is not None:
+                draw_auto_start_countdown(frame, auto_start_seconds_left)
             if (
                 running
                 and cfg.mode == "score"

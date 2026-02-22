@@ -66,14 +66,27 @@ def parse_speed(data: Dict[str, Any], beatmap: Dict[str, Any]) -> float:
         return 1.0
 
 
+def is_learning_speed(speed: float) -> bool:
+    return abs(speed + 1.0) < 1e-9
+
+
 def build_speed_mode_args(speed: float) -> List[str]:
     # speed == -1 means "train mode" (one note at a time).
-    if abs(speed + 1.0) < 1e-9:
-        return ["--mode", "train", "--stick-track"]
+    if is_learning_speed(speed):
+        return [
+            "--mode",
+            "train",
+            "--stick-track",
+            "--stick-debug",
+            "--stick-hsv-lower",
+            "35,80,80",
+            "--stick-hsv-upper",
+            "90,255,255",
+        ]
 
-    # Normal timeline playback.
+    # Normal timeline playback, but still scored.
     safe_speed = speed if speed > 0.0 else 1.0
-    return ["--mode", "play", "--speed", f"{safe_speed:.3f}"]
+    return ["--mode", "score", "--stick-track", "--speed", f"{safe_speed:.3f}"]
 
 
 def start_cv_process(extra_args: Optional[List[str]] = None) -> subprocess.Popen:
@@ -131,7 +144,7 @@ async def handler(ws):
                         "saved": str(LATEST_JSON_PATH),
                         "song_path": str(DEFAULT_SONG_PATH),
                         "requested_speed": speed,
-                        "mode": ("train" if abs(speed + 1.0) < 1e-9 else "play"),
+                        "mode": ("train" if is_learning_speed(speed) else "score"),
                         "cv_args": effective_cv_args,
                         "cv_started": True,
                         "pid": cv_process.pid if cv_process else None,

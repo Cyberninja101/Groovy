@@ -85,7 +85,7 @@ class Config:
 
     # Camera-only hit detection tuning
     hit_z_thresh_m: float = 0.015
-    approach_speed_thresh_mps: float = 0.6
+    approach_speed_thresh_mps: float = 0.35
     cooldown_ms: int = 100
     rearm_z_m: float = 0.04
 
@@ -144,13 +144,13 @@ def make_config(args: argparse.Namespace) -> Config:
         name_to_marker_id={
             "SNARE": 1,
             "BASS": 2,
-            "RIDE": 3,
+            "HIHAT": 3,
             "CRASH": 4,
         },
         drum_name_to_highlight_r_m={
             "SNARE": 0.14,
             "BASS": 0.20,
-            "RIDE": 0.17,
+            "HIHAT": 0.17,
             "CRASH": 0.16,
         },
     )
@@ -280,6 +280,11 @@ class ScoreState:
     extra_hits: int = 0
     last_judgment_text: str = ""
     last_judgment_until_ms: int = 0
+    recent_scores: Deque[float] = field(default_factory=deque)
+    milestone_text: str = ""
+    milestone_color: Tuple[int, int, int] = (255, 255, 255)
+    milestone_until_ms: int = 0
+    last_milestone_total: int = 0
     finished: bool = False
 
 
@@ -666,6 +671,30 @@ def draw_banner(frame: np.ndarray, text: str, ok: bool = True) -> None:
 
     color = (0, 255, 0) if ok else (0, 255, 255)
     cv2.putText(frame, text, (16, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2, cv2.LINE_AA)
+
+
+def draw_center_popup(frame: np.ndarray, text: str, color: Tuple[int, int, int]) -> None:
+    if not text:
+        return
+    h, w = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 1.25
+    thick = 3
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, thick)
+    pad_x = 26
+    pad_y = 22
+    box_w = tw + (2 * pad_x)
+    box_h = th + baseline + (2 * pad_y)
+    x0 = max(0, (w - box_w) // 2)
+    y0 = max(0, (h - box_h) // 2)
+    x1 = min(w, x0 + box_w)
+    y1 = min(h, y0 + box_h)
+
+    alpha_fill_rect(frame, x0, y0, x1, y1, (0, 0, 0), 0.62)
+    cv2.rectangle(frame, (x0, y0), (x1, y1), color, 2, cv2.LINE_AA)
+    tx = x0 + (box_w - tw) // 2
+    ty = y0 + pad_y + th
+    cv2.putText(frame, text, (tx, ty), font, scale, color, thick, cv2.LINE_AA)
 
 
 def draw_2d_ring(
@@ -1353,22 +1382,31 @@ def update_hit_states(
         drum_r_m = float(marker_id_to_radius_m.get(mid, cfg.drum_highlight_r_m))
         rearm_margin = max(0.005, float(cfg.rearm_z_m))
         enter_margin = max(0.003, min(float(cfg.rearm_z_m), 0.35 * drum_r_m))
+        generous_margin = max(0.006, 0.35 * enter_margin)
+        hit_radius = drum_r_m + generous_margin
+        z_tol = max(0.03, 2.0 * float(cfg.hit_z_thresh_m))
+        z_ok = abs(z_local) <= z_tol
         if radial > (drum_r_m + rearm_margin):
             state.armed = True
 
         cooldown_ok = (now_wall_ms - state.last_hit_ms) >= int(cfg.cooldown_ms)
-        crossing = (prev_radial is not None) and (prev_radial > (drum_r_m + enter_margin)) and (radial <= drum_r_m)
+        crossing = (prev_radial is not None) and (prev_radial > (drum_r_m + enter_margin)) and (radial <= hit_radius)
         radial_delta = 0.0 if prev_radial is None else float(prev_radial - radial)
-        speed_ok = (vr < -cfg.approach_speed_thresh_mps) or (radial_delta > max(0.008, 0.35 * enter_margin))
+        speed_ok = (vr < -cfg.approach_speed_thresh_mps) or (radial_delta > max(0.004, 0.15 * enter_margin))
+        moving_ok = radial_delta > -max(0.003, 0.20 * enter_margin)
+        inside_ok = (prev_radial is not None) and (radial <= hit_radius)
         candidate_hit = (
             state.armed
-            and crossing
-            and speed_ok
+            and inside_ok
+            and (crossing or moving_ok or speed_ok)
+            and z_ok
             and cooldown_ok
         )
 
         if candidate_hit:
-            score = abs(vr) + (4.0 * radial_delta)
+            # Prefer the marker where the stick tip is deeper inside the target ring.
+            inside_depth = max(0.0, hit_radius - radial)
+            score = (40.0 * inside_depth) + (2.0 * max(0.0, radial_delta)) + (0.05 * max(0.0, -vr))
             candidates.append((int(mid), score, radial))
 
         if closest_info is None or radial < closest_info[2]:
@@ -1464,6 +1502,39 @@ def update_offset(
     return float(np.clip(out, -clamp_ms, clamp_ms))
 
 
+def add_scored_hit(score: ScoreState, hit_score: float, now_ms: int, flash_ms: int = 1800) -> None:
+    score.total_scored += 1
+    score.score_sum += float(hit_score)
+    score.recent_scores.append(float(hit_score))
+    while len(score.recent_scores) > 10:
+        score.recent_scores.popleft()
+
+    if score.total_scored % 10 != 0:
+        return
+    if score.total_scored == score.last_milestone_total:
+        return
+
+    recent_avg = float(sum(score.recent_scores) / max(1, len(score.recent_scores)))
+    recent_acc = 100.0 * recent_avg
+    if recent_acc >= 90.0:
+        verdict = "Excellent"
+        color = (0, 255, 0)
+    elif recent_acc >= 75.0:
+        verdict = "Good"
+        color = (0, 220, 120)
+    elif recent_acc >= 60.0:
+        verdict = "Okay"
+        color = (0, 255, 255)
+    else:
+        verdict = "Bad"
+        color = (0, 0, 255)
+
+    score.milestone_text = f"Last 10 acc: {recent_acc:.0f}% ({verdict})"
+    score.milestone_color = color
+    score.milestone_until_ms = int(now_ms + flash_ms)
+    score.last_milestone_total = score.total_scored
+
+
 def match_expected_to_hits(
     expected_t_ms: int,
     expected_mid: int,
@@ -1545,7 +1616,7 @@ def process_score_mode_events(
             late_ms=late_ms,
         )
         if idx is None or dt_ms is None:
-            score.total_scored += 1
+            add_scored_hit(score, 0.00, now_ms)
             score.miss_count += 1
             score.last_judgment_text = f"{exp.drum_name} MISS"
             score.last_judgment_until_ms = int(now_ms + judge_flash_ms)
@@ -1557,8 +1628,7 @@ def process_score_mode_events(
 
         if is_correct:
             hit_score, label = score_dt(abs(dt_ms))
-            score.total_scored += 1
-            score.score_sum += hit_score
+            add_scored_hit(score, hit_score, now_ms)
             if label == "PERFECT":
                 score.perfect_count += 1
             elif label == "GOOD":
@@ -1572,8 +1642,7 @@ def process_score_mode_events(
             score.last_judgment_text = f"{exp.drum_name} {label} (dt={dt_ms:+d}ms)"
         else:
             wrong_score = 0.25 if abs(dt_ms) <= 120 else 0.00
-            score.total_scored += 1
-            score.score_sum += wrong_score
+            add_scored_hit(score, wrong_score, now_ms)
             score.miss_count += 1
             wrong_name = marker_id_to_name.get(hit.mid, hit.drum_name)
             set_feedback(feedback_by_mid, hit.mid, (0, 0, 255), wall_ms, cfg.feedback_flash_ms)
@@ -1604,6 +1673,8 @@ def update_score_mode_ui(title: str, score: ScoreState, running: bool, now_ms: i
         text = f"{title} | MODE SCORE | Press 's' to start | {stats}"
     if running and score.last_judgment_text and now_ms <= score.last_judgment_until_ms:
         text += f" | {score.last_judgment_text}"
+    if running and score.milestone_text and now_ms <= score.milestone_until_ms:
+        text += f" | {score.milestone_text}"
     if score.finished:
         text += " | DONE"
     return text
@@ -1851,6 +1922,11 @@ def main():
             score_state.extra_hits = 0
             score_state.last_judgment_text = ""
             score_state.last_judgment_until_ms = 0
+            score_state.recent_scores.clear()
+            score_state.milestone_text = ""
+            score_state.milestone_color = (255, 255, 255)
+            score_state.milestone_until_ms = 0
+            score_state.last_milestone_total = 0
             score_state.finished = False
 
     def start_session(from_auto: bool = False) -> bool:
@@ -2249,6 +2325,14 @@ def main():
                         cue_text = cue_text + f" | NO 3D POSE: {', '.join(missing_names)}"
 
             draw_banner(frame, cue_text, ok=cue_ok)
+            if (
+                running
+                and cfg.mode == "score"
+                and score_state is not None
+                and score_state.milestone_text
+                and now_ms <= score_state.milestone_until_ms
+            ):
+                draw_center_popup(frame, score_state.milestone_text, score_state.milestone_color)
             if cfg.show_fps:
                 fps_frames += 1
                 now_t = time.perf_counter()

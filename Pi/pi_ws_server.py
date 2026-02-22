@@ -1,21 +1,125 @@
-import asyncio, json
+import asyncio
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import websockets
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+AUDIO_DIR = ROOT_DIR / "Audio"
+LATEST_JSON_PATH = AUDIO_DIR / "latest-from-app.json"
+# CV/main.py currently defaults to this path, so keep it updated too.
+DEFAULT_SONG_PATH = AUDIO_DIR / "brandy-1350.json"
+CV_MAIN_PATH = ROOT_DIR / "CV" / "main.py"
+DEFAULT_CV_ARGS = [
+    "--auto-start-delay",
+    "3",
+    "--detect-scale",
+    "1.0",
+    "--detect-every",
+    "1",
+]
+
+
+cv_process: Optional[subprocess.Popen] = None
+process_lock = asyncio.Lock()
+
+
+def extract_beatmap_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(data.get("events"), list):
+        return data
+
+    for key in ("beatmap", "song", "payload", "data"):
+        candidate = data.get(key)
+        if isinstance(candidate, dict) and isinstance(candidate.get("events"), list):
+            return candidate
+
+    raise ValueError("No beatmap payload found (expected an object with an 'events' list).")
+
+
+def stop_cv_process() -> None:
+    global cv_process
+    if cv_process is None:
+        return
+    if cv_process.poll() is not None:
+        cv_process = None
+        return
+
+    print(f"Stopping existing CV process (pid={cv_process.pid})")
+    cv_process.terminate()
+    try:
+        cv_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        cv_process.kill()
+        cv_process.wait(timeout=2)
+    cv_process = None
+
+
+def start_cv_process(extra_args: Optional[List[str]] = None) -> subprocess.Popen:
+    args = [sys.executable, str(CV_MAIN_PATH), *DEFAULT_CV_ARGS]
+    if extra_args:
+        args.extend(extra_args)
+
+    print("Starting CV process:", " ".join(args))
+    proc = subprocess.Popen(args, cwd=str(ROOT_DIR))
+    return proc
+
+
+def save_payload(payload: Dict[str, Any]) -> None:
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+    with LATEST_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    # Keep default path in sync so CV/main.py loads the latest app beatmap.
+    with DEFAULT_SONG_PATH.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
 
 async def handler(ws):
     print("Client connected")
     async for msg in ws:
-        data = json.loads(msg)
+        try:
+            data = json.loads(msg)
+            if not isinstance(data, dict):
+                raise ValueError("Request must be a JSON object.")
 
-        # Save latest JSON (or trigger your Pi logic here)
-        with open("latest.json", "w") as f:
-            json.dump(data, f, indent=2)
+            beatmap = extract_beatmap_payload(data)
+            cv_args = data.get("cv_args")
+            if cv_args is not None and not (
+                isinstance(cv_args, list) and all(isinstance(x, str) for x in cv_args)
+            ):
+                raise ValueError("'cv_args' must be a list of strings when provided.")
 
-        await ws.send(json.dumps({"ok": True, "saved": "latest.json"}))
+            async with process_lock:
+                save_payload(beatmap)
+                stop_cv_process()
+                global cv_process
+                cv_process = start_cv_process(cv_args)
+
+            await ws.send(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "saved": str(LATEST_JSON_PATH),
+                        "song_path": str(DEFAULT_SONG_PATH),
+                        "cv_started": True,
+                        "pid": cv_process.pid if cv_process else None,
+                    }
+                )
+            )
+        except Exception as e:
+            await ws.send(json.dumps({"ok": False, "error": str(e)}))
+
 
 async def main():
     async with websockets.serve(handler, "0.0.0.0", 8765, max_size=50 * 1024 * 1024):
         print("Listening on ws://0.0.0.0:8765")
         await asyncio.Future()  # run forever
+
 
 if __name__ == "__main__":
     asyncio.run(main())

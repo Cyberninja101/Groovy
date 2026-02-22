@@ -40,7 +40,7 @@ class Config:
     hold_ms: int = 120
     chord_eps_ms: int = 50
     playback_speed: float = 1.0
-    mode: str = "play"  # 'play' or 'train'
+    mode: str = "play"  # 'play', 'train', or 'score'
 
     # Window + queue behavior
     lookahead_ms: int = 300          # pre-ingest events this far beyond lead
@@ -92,11 +92,14 @@ class Config:
     # Visual feedback (correct/incorrect/hit flash)
     feedback_flash_ms: int = 120
 
+    # Startup behavior
+    auto_start_delay_s: float = 0.0
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ArUco drum overlay")
     parser.add_argument("--pi", action="store_true", help="Enable Raspberry Pi performance preset.")
-    parser.add_argument("--mode", choices=["play", "train"], default="play", help="Playback mode.")
+    parser.add_argument("--mode", choices=["play", "train", "score"], default="play", help="Playback mode.")
     parser.add_argument("--train", action="store_true", help="Alias for --mode train.")
     parser.add_argument("--detect-scale", type=float, default=None, help="Marker detection scale in (0, 1].")
     parser.add_argument("--detect-every", type=int, default=None, help="Run marker detection every N frames (>= 1).")
@@ -107,6 +110,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stick-min-area", type=int, default=None, help="Minimum contour area for stick tip blob.")
     parser.add_argument("--stick-max-jump", type=int, default=None, help="Maximum per-frame stick tip jump in pixels.")
     parser.add_argument("--stick-debug", action="store_true", help="Draw stick debug overlays.")
+    parser.add_argument(
+        "--auto-start-delay",
+        type=float,
+        default=None,
+        help="Auto-start after this many seconds (e.g. 3.0).",
+    )
     parser.add_argument("--show-fps", action="store_true", help="Show realtime FPS in the overlay.")
     return parser.parse_args()
 
@@ -186,6 +195,8 @@ def make_config(args: argparse.Namespace) -> Config:
         cfg = replace(cfg, stick_debug=True)
     if args.show_fps:
         cfg = replace(cfg, show_fps=True)
+    if args.auto_start_delay is not None:
+        cfg = replace(cfg, auto_start_delay_s=max(0.0, float(args.auto_start_delay)))
 
     cfg = replace(
         cfg,
@@ -236,6 +247,40 @@ class TrainState:
     correct_hits: int = 0
     mistakes: int = 0
     done: bool = False
+
+
+@dataclass
+class ScoreHit:
+    hit_ms: int
+    mid: int
+    drum_name: str
+    used: bool = False
+
+
+@dataclass
+class ScoreExpected:
+    t_ms: int
+    mid: int
+    drum_name: str
+
+
+@dataclass
+class ScoreState:
+    expected: List[ScoreExpected] = field(default_factory=list)
+    hits: List[ScoreHit] = field(default_factory=list)
+    next_expected_idx: int = 0
+    offset_ms: float = 0.0
+    score_sum: float = 0.0
+    total_scored: int = 0
+    perfect_count: int = 0
+    good_count: int = 0
+    ok_count: int = 0
+    miss_count: int = 0
+    skipped_count: int = 0
+    extra_hits: int = 0
+    last_judgment_text: str = ""
+    last_judgment_until_ms: int = 0
+    finished: bool = False
 
 
 # ============================================================
@@ -930,6 +975,21 @@ def make_aruco_detector(cfg: Config):
     params = aruco.DetectorParameters()
     if not cfg.corner_refine and hasattr(aruco, "CORNER_REFINE_NONE"):
         params.cornerRefinementMethod = aruco.CORNER_REFINE_NONE
+    # Improve long-distance/small-marker detect stability.
+    if hasattr(params, "minMarkerPerimeterRate"):
+        params.minMarkerPerimeterRate = 0.015
+    if hasattr(params, "maxMarkerPerimeterRate"):
+        params.maxMarkerPerimeterRate = 4.0
+    if hasattr(params, "adaptiveThreshWinSizeMin"):
+        params.adaptiveThreshWinSizeMin = 3
+    if hasattr(params, "adaptiveThreshWinSizeMax"):
+        params.adaptiveThreshWinSizeMax = 53
+    if hasattr(params, "adaptiveThreshWinSizeStep"):
+        params.adaptiveThreshWinSizeStep = 4
+    if hasattr(params, "minDistanceToBorder"):
+        params.minDistanceToBorder = 1
+    if hasattr(params, "detectInvertedMarker"):
+        params.detectInvertedMarker = True
     if hasattr(params, "useAruco3Detection"):
         params.useAruco3Detection = True
     return aruco.ArucoDetector(dictionary, params)
@@ -1059,7 +1119,7 @@ def validate_tracked_corners(
 
     area_prev = polygon_area(prev_pts)
     area_new = polygon_area(new_pts)
-    if area_prev < 10.0 or area_new < 10.0:
+    if area_prev < 4.0 or area_new < 4.0:
         return False
     area_ratio = area_new / max(area_prev, 1e-6)
     if area_ratio < 0.45 or area_ratio > 2.20:
@@ -1069,7 +1129,7 @@ def validate_tracked_corners(
     new_edges = np.roll(new_pts, -1, axis=0) - new_pts
     prev_len = np.linalg.norm(prev_edges, axis=1)
     new_len = np.linalg.norm(new_edges, axis=1)
-    if np.any(prev_len < 2.0) or np.any(new_len < 2.0):
+    if np.any(prev_len < 1.2) or np.any(new_len < 1.2):
         return False
     if np.any(new_len > (prev_len * 2.5 + 8.0)):
         return False
@@ -1360,6 +1420,195 @@ def update_train_mode(
     return None, int(hit_mid), False
 
 
+def build_score_expected_events(events: List[dict], cfg: Config) -> List[ScoreExpected]:
+    out: List[ScoreExpected] = []
+    i = 0
+    while i < len(events):
+        t_chord, group = group_chord(events, i, cfg.chord_eps_ms)
+        for e in group:
+            drum_id = int(e["drum"])
+            drum_name = cfg.drum_id_to_name.get(drum_id)
+            if drum_name is None:
+                continue
+            mid = cfg.name_to_marker_id.get(drum_name)
+            if mid is None:
+                continue
+            out.append(ScoreExpected(t_ms=int(t_chord), mid=int(mid), drum_name=drum_name))
+        i += len(group)
+    return out
+
+
+def score_dt(abs_dt_ms: int) -> Tuple[float, str]:
+    dt = abs(int(abs_dt_ms))
+    if dt <= 60:
+        return 1.00, "PERFECT"
+    if dt <= 120:
+        return 0.90, "GOOD"
+    if dt <= 200:
+        return 0.75, "OK"
+    if dt <= 260:
+        return 0.60, "OK"
+    return 0.00, "MISS"
+
+
+def update_offset(
+    offset_ms: float,
+    expected_ms: int,
+    hit_ms: int,
+    alpha: float = 0.12,
+    clamp_ms: float = 350.0,
+) -> float:
+    a = clamp01(alpha)
+    target = float(hit_ms - expected_ms)
+    out = (1.0 - a) * float(offset_ms) + a * target
+    return float(np.clip(out, -clamp_ms, clamp_ms))
+
+
+def match_expected_to_hits(
+    expected_t_ms: int,
+    expected_mid: int,
+    hits: List[ScoreHit],
+    offset_ms: float,
+    early_ms: int = 220,
+    late_ms: int = 260,
+) -> Tuple[Optional[int], Optional[int], bool]:
+    best_idx: Optional[int] = None
+    best_dt: Optional[int] = None
+    best_rank = (2, 1e9)
+
+    for i, h in enumerate(hits):
+        if h.used:
+            continue
+        corrected_hit_ms = float(h.hit_ms) - float(offset_ms)
+        dt = corrected_hit_ms - float(expected_t_ms)
+        if dt < -float(early_ms) or dt > float(late_ms):
+            continue
+        is_wrong = 0 if int(h.mid) == int(expected_mid) else 1
+        rank = (is_wrong, abs(dt))
+        if rank < best_rank:
+            best_rank = rank
+            best_idx = i
+            best_dt = int(round(dt))
+
+    is_correct = bool(best_idx is not None and best_rank[0] == 0)
+    return best_idx, best_dt, is_correct
+
+
+def had_pose_in_window(samples: Optional[Deque[int]], t_min_ms: int, t_max_ms: int) -> bool:
+    if samples is None:
+        return False
+    for ts in samples:
+        if ts < t_min_ms:
+            continue
+        if ts <= t_max_ms:
+            return True
+        break
+    return False
+
+
+def process_score_mode_events(
+    score: ScoreState,
+    now_ms: int,
+    wall_ms: int,
+    pose_seen_by_mid: Dict[int, Deque[int]],
+    feedback_by_mid: Dict[int, Tuple[Tuple[int, int, int], int]],
+    marker_id_to_name: Dict[int, str],
+    cfg: Config,
+) -> None:
+    if score.finished:
+        return
+
+    early_ms = 220
+    late_ms = 260
+    judge_flash_ms = 500
+
+    while score.next_expected_idx < len(score.expected):
+        exp = score.expected[score.next_expected_idx]
+        if now_ms < (exp.t_ms + late_ms):
+            break
+
+        win_lo = exp.t_ms - early_ms
+        win_hi = exp.t_ms + late_ms
+        if not had_pose_in_window(pose_seen_by_mid.get(exp.mid), win_lo, win_hi):
+            score.skipped_count += 1
+            score.last_judgment_text = f"{exp.drum_name} SKIP (no pose)"
+            score.last_judgment_until_ms = int(now_ms + judge_flash_ms)
+            score.next_expected_idx += 1
+            continue
+
+        idx, dt_ms, is_correct = match_expected_to_hits(
+            exp.t_ms,
+            exp.mid,
+            score.hits,
+            score.offset_ms,
+            early_ms=early_ms,
+            late_ms=late_ms,
+        )
+        if idx is None or dt_ms is None:
+            score.total_scored += 1
+            score.miss_count += 1
+            score.last_judgment_text = f"{exp.drum_name} MISS"
+            score.last_judgment_until_ms = int(now_ms + judge_flash_ms)
+            score.next_expected_idx += 1
+            continue
+
+        hit = score.hits[idx]
+        hit.used = True
+
+        if is_correct:
+            hit_score, label = score_dt(abs(dt_ms))
+            score.total_scored += 1
+            score.score_sum += hit_score
+            if label == "PERFECT":
+                score.perfect_count += 1
+            elif label == "GOOD":
+                score.good_count += 1
+            elif label == "OK":
+                score.ok_count += 1
+            else:
+                score.miss_count += 1
+            score.offset_ms = update_offset(score.offset_ms, exp.t_ms, hit.hit_ms)
+            set_feedback(feedback_by_mid, exp.mid, (0, 255, 0), wall_ms, cfg.feedback_flash_ms)
+            score.last_judgment_text = f"{exp.drum_name} {label} (dt={dt_ms:+d}ms)"
+        else:
+            wrong_score = 0.25 if abs(dt_ms) <= 120 else 0.00
+            score.total_scored += 1
+            score.score_sum += wrong_score
+            score.miss_count += 1
+            wrong_name = marker_id_to_name.get(hit.mid, hit.drum_name)
+            set_feedback(feedback_by_mid, hit.mid, (0, 0, 255), wall_ms, cfg.feedback_flash_ms)
+            score.last_judgment_text = f"{exp.drum_name} MISS ({wrong_name}, dt={dt_ms:+d}ms)"
+
+        score.last_judgment_until_ms = int(now_ms + judge_flash_ms)
+        score.next_expected_idx += 1
+
+    if score.next_expected_idx >= len(score.expected):
+        score.finished = True
+        score.extra_hits = sum(1 for h in score.hits if not h.used)
+
+
+def update_score_mode_ui(title: str, score: ScoreState, running: bool, now_ms: int) -> str:
+    acc = 0.0
+    if score.total_scored > 0:
+        acc = 100.0 * (score.score_sum / float(score.total_scored))
+
+    stats = (
+        f"Acc {acc:5.1f}% | "
+        f"P/G/O/M {score.perfect_count}/{score.good_count}/{score.ok_count}/{score.miss_count} | "
+        f"offset {score.offset_ms:+.0f}ms | skipped {score.skipped_count}"
+    )
+    text = (
+        f"{title} | MODE SCORE | {stats}"
+    )
+    if not running:
+        text = f"{title} | MODE SCORE | Press 's' to start | {stats}"
+    if running and score.last_judgment_text and now_ms <= score.last_judgment_until_ms:
+        text += f" | {score.last_judgment_text}"
+    if score.finished:
+        text += " | DONE"
+    return text
+
+
 def draw_fps(frame: np.ndarray, fps: float) -> None:
     text = f"{fps:4.1f} FPS"
     _h, w = frame.shape[:2]
@@ -1487,12 +1736,12 @@ def main():
     else:
         print("Controls: s = start, r = reset, q = quit")
     print(f"Playback speed: {cfg.playback_speed:.2f}x")
-    train_blocked = (cfg.mode == "train") and (not cfg.enable_stick_tracking)
+    mode_blocked = (cfg.mode in ("train", "score")) and (not cfg.enable_stick_tracking)
     if (cfg.mode != "play") or cfg.enable_stick_tracking:
         print(f"Mode: {cfg.mode}")
         print(f"Stick tracking: {'ON' if cfg.enable_stick_tracking else 'OFF'}")
-    if train_blocked:
-        print("TRAIN MODE WARNING: enable --stick-track to start training.")
+    if mode_blocked:
+        print(f"{cfg.mode.upper()} MODE WARNING: enable --stick-track to start.")
     if args.pi:
         print(
             "Pi preset: "
@@ -1553,6 +1802,75 @@ def main():
         chord_starts = build_chord_starts(events, cfg.chord_eps_ms)
         train_state = TrainState(chord_starts=chord_starts, total_chords=len(chord_starts))
         set_train_target(train_state, events, cfg)
+
+    # Score mode state.
+    score_state: Optional[ScoreState] = None
+    pose_seen_by_mid: Dict[int, Deque[int]] = {}
+    score_summary_printed = False
+    if cfg.mode == "score":
+        expected = build_score_expected_events(events, cfg)
+        score_state = ScoreState(expected=expected)
+
+    auto_start_at_t: Optional[float] = None
+    if cfg.auto_start_delay_s > 0.0:
+        auto_start_at_t = time.perf_counter() + cfg.auto_start_delay_s
+        print(f"Auto-start enabled: starting in {cfg.auto_start_delay_s:.1f}s")
+
+    def reset_mode_state() -> None:
+        nonlocal ingest_idx, next_idx, score_summary_printed
+        ingest_idx = 0
+        next_idx = 0
+        pulses_by_mid.clear()
+        hit_state_by_mid.clear()
+        feedback_by_mid.clear()
+        pose_seen_by_mid.clear()
+        score_summary_printed = False
+
+        if train_state is not None:
+            train_state.idx = 0
+            train_state.group_end_idx = 0
+            train_state.target_t_ms = 0
+            train_state.expected_mids.clear()
+            train_state.remaining_mids.clear()
+            train_state.correct_hits = 0
+            train_state.mistakes = 0
+            train_state.done = False
+            set_train_target(train_state, events, cfg)
+
+        if score_state is not None:
+            score_state.hits.clear()
+            score_state.next_expected_idx = 0
+            score_state.offset_ms = 0.0
+            score_state.score_sum = 0.0
+            score_state.total_scored = 0
+            score_state.perfect_count = 0
+            score_state.good_count = 0
+            score_state.ok_count = 0
+            score_state.miss_count = 0
+            score_state.skipped_count = 0
+            score_state.extra_hits = 0
+            score_state.last_judgment_text = ""
+            score_state.last_judgment_until_ms = 0
+            score_state.finished = False
+
+    def start_session(from_auto: bool = False) -> bool:
+        nonlocal running, start_t, stick_tip_full, auto_start_at_t
+        if mode_blocked:
+            return False
+
+        running = True
+        start_t = time.perf_counter()
+        stick_tip_full = None
+        auto_start_at_t = None
+        reset_mode_state()
+
+        if cfg.mode == "train":
+            print("Training started" + (" (auto)" if from_auto else ""))
+        elif cfg.mode == "score":
+            print("Score mode started" + (" (auto)" if from_auto else ""))
+        else:
+            print("Song started" + (" (auto)" if from_auto else ""))
+        return True
 
     fps_last_t = time.perf_counter()
     fps_frames = 0
@@ -1617,10 +1935,15 @@ def main():
 
             loop_t = time.perf_counter()
             wall_ms = int(loop_t * 1000.0)
+
+            if (not running) and (auto_start_at_t is not None) and (not mode_blocked):
+                if loop_t >= auto_start_at_t:
+                    start_session(from_auto=True)
+
             now_ms = 0
             if running and start_t is not None:
                 elapsed_ms = (loop_t - start_t) * 1000.0
-                if cfg.mode == "play":
+                if cfg.mode in ("play", "score"):
                     now_ms = int(elapsed_ms * cfg.playback_speed)
                 else:
                     now_ms = int(elapsed_ms)
@@ -1644,11 +1967,13 @@ def main():
                     if hit_mid is not None:
                         hit_name = marker_id_to_name.get(hit_mid, f"ID {hit_mid}")
                         print(f"HIT: {hit_name} at {now_ms}ms")
+                        if cfg.mode == "score" and score_state is not None:
+                            score_state.hits.append(ScoreHit(hit_ms=int(now_ms), mid=int(hit_mid), drum_name=hit_name))
 
             # ------------------------------------------------------------
             # 1) Active time window ingestion (plus lookahead)
             # ------------------------------------------------------------
-            if running and cfg.mode == "play":
+            if running and cfg.mode in ("play", "score"):
                 ingest_until = now_ms + cfg.lead_ms + cfg.lookahead_ms
                 while ingest_idx < len(events) and events[ingest_idx]["t_ms"] <= ingest_until:
                     e = events[ingest_idx]
@@ -1664,8 +1989,21 @@ def main():
                 cull_expired_pulses(pulses_by_mid, now_ms, cfg)
 
             # ------------------------------------------------------------
-            # 2) Train mode progression from hit events
+            # 2) Train/Score progression from hit events
             # ------------------------------------------------------------
+            if running and cfg.mode == "score":
+                # Keep short pose-visibility history for skip logic.
+                hist_cutoff = now_ms - 2200
+                for mid in list(pose_seen_by_mid.keys()):
+                    dq = pose_seen_by_mid[mid]
+                    while dq and dq[0] < hist_cutoff:
+                        dq.popleft()
+                    if not dq and mid not in poses:
+                        pose_seen_by_mid.pop(mid, None)
+                for mid in poses.keys():
+                    dq = pose_seen_by_mid.setdefault(int(mid), deque())
+                    dq.append(int(now_ms))
+
             if running and cfg.mode == "train" and train_state is not None:
                 correct_mid = wrong_mid = None
                 if hit_mid is not None:
@@ -1678,6 +2016,31 @@ def main():
                     print(f"TRAIN MISS: {marker_id_to_name.get(wrong_mid, f'ID {wrong_mid}')}")
             elif running and cfg.mode == "play" and hit_mid is not None:
                 set_feedback(feedback_by_mid, hit_mid, (0, 255, 0), wall_ms, cfg.feedback_flash_ms)
+            elif running and cfg.mode == "score" and score_state is not None:
+                process_score_mode_events(
+                    score_state,
+                    now_ms,
+                    wall_ms,
+                    pose_seen_by_mid,
+                    feedback_by_mid,
+                    marker_id_to_name,
+                    cfg,
+                )
+                if score_state.finished and not score_summary_printed:
+                    acc = 0.0
+                    if score_state.total_scored > 0:
+                        acc = 100.0 * (score_state.score_sum / float(score_state.total_scored))
+                    print("=== SCORE SUMMARY ===")
+                    print(f"Accuracy: {acc:.2f}%")
+                    print(
+                        "Counts: "
+                        f"perfect={score_state.perfect_count}, good={score_state.good_count}, "
+                        f"ok={score_state.ok_count}, miss={score_state.miss_count}"
+                    )
+                    print(f"Skipped notes: {score_state.skipped_count}")
+                    print(f"Extra hits: {score_state.extra_hits}")
+                    print(f"Final offset: {score_state.offset_ms:+.1f}ms")
+                    score_summary_printed = True
 
             cleanup_feedback(feedback_by_mid, wall_ms)
 
@@ -1690,9 +2053,9 @@ def main():
             next_t: Optional[int] = None
             dt_next: Optional[int] = None
 
-            if train_blocked:
+            if mode_blocked:
                 cue_ok = False
-                cue_text = f"{title} | mode=train | enable --stick-track to start"
+                cue_text = f"{title} | mode={cfg.mode} | enable --stick-track to start"
             elif running:
                 if cfg.mode == "play":
                     next_idx = advance_idx_past_old(events, next_idx, now_ms, cfg.hold_ms)
@@ -1703,7 +2066,7 @@ def main():
                         dt_next = next_t - now_ms
                         next_names = [cfg.drum_id_to_name.get(int(e["drum"]), f"DRUM {e['drum']}") for e in next_group]
                         cue_text = f"{title} | NEXT: {' + '.join(next_names)} | in {max(dt_next, 0)}ms"
-                else:
+                elif cfg.mode == "train":
                     if train_state is None:
                         cue_text = f"{title} | mode=train"
                     elif train_state.done:
@@ -1719,6 +2082,8 @@ def main():
                             f"chord {train_state.chord_number}/{max(1, train_state.total_chords)} | "
                             f"hits {train_state.correct_hits} | mistakes {train_state.mistakes}"
                         )
+                elif cfg.mode == "score" and score_state is not None:
+                    cue_text = update_score_mode_ui(title, score_state, running=True, now_ms=now_ms)
             elif cfg.mode == "train" and train_state is not None and not train_state.done:
                 remaining_names = [marker_id_to_name.get(mid, f"ID {mid}") for mid in sorted(train_state.remaining_mids)]
                 next_text = " + ".join(remaining_names) if remaining_names else "NONE"
@@ -1726,6 +2091,12 @@ def main():
                     f"{title} | mode=train | Press 's' to start | "
                     f"NEXT: {next_text} | chord {train_state.chord_number}/{max(1, train_state.total_chords)}"
                 )
+            elif cfg.mode == "score" and score_state is not None:
+                cue_text = update_score_mode_ui(title, score_state, running=False, now_ms=now_ms)
+
+            if (not running) and (auto_start_at_t is not None) and (not mode_blocked):
+                sec_left = max(0, int(np.ceil(auto_start_at_t - loop_t)))
+                cue_text = f"{title} | mode={cfg.mode} | AUTO START IN {sec_left}s"
 
             # ------------------------------------------------------------
             # Draw detections: base green ring + pulses from per-marker queues
@@ -1770,7 +2141,7 @@ def main():
 
                 # Render pulses for this marker, if any
                 q = pulses_by_mid.get(mid)
-                if running and cfg.mode == "play" and q and has_pose:
+                if running and cfg.mode in ("play", "score") and q and has_pose:
                     roll = find_active_roll(q, now_ms, cfg)
                     if roll is not None:
                         rvec, tvec = pose
@@ -1894,49 +2265,15 @@ def main():
             if key == ord("q"):
                 break
             if key == ord("s"):
-                if train_blocked:
-                    print("TRAIN MODE WARNING: start blocked. Re-run with --stick-track.")
+                if mode_blocked:
+                    print(f"{cfg.mode.upper()} MODE WARNING: start blocked. Re-run with --stick-track.")
                     continue
-                running = True
-                start_t = time.perf_counter()
-                ingest_idx = 0
-                next_idx = 0
-                pulses_by_mid.clear()
-                hit_state_by_mid.clear()
-                feedback_by_mid.clear()
-                stick_tip_full = None
-                if cfg.mode == "train" and train_state is not None:
-                    train_state.idx = 0
-                    train_state.group_end_idx = 0
-                    train_state.target_t_ms = 0
-                    train_state.expected_mids.clear()
-                    train_state.remaining_mids.clear()
-                    train_state.correct_hits = 0
-                    train_state.mistakes = 0
-                    train_state.done = False
-                    set_train_target(train_state, events, cfg)
-                    print("Training started")
-                else:
-                    print("Song started")
+                start_session(from_auto=False)
             if key == ord("r"):
                 running = False
                 start_t = None
-                ingest_idx = 0
-                next_idx = 0
-                pulses_by_mid.clear()
-                hit_state_by_mid.clear()
-                feedback_by_mid.clear()
                 stick_tip_full = None
-                if train_state is not None:
-                    train_state.idx = 0
-                    train_state.group_end_idx = 0
-                    train_state.target_t_ms = 0
-                    train_state.expected_mids.clear()
-                    train_state.remaining_mids.clear()
-                    train_state.correct_hits = 0
-                    train_state.mistakes = 0
-                    train_state.done = False
-                    set_train_target(train_state, events, cfg)
+                reset_mode_state()
                 print("Reset")
             if key == ord("n") and cfg.mode == "train" and running and train_state is not None:
                 skip_train_target(train_state, events, cfg)

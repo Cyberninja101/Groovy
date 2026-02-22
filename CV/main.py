@@ -148,10 +148,10 @@ def make_config(args: argparse.Namespace) -> Config:
             "CRASH": 4,
         },
         drum_name_to_highlight_r_m={
-            "SNARE": 0.7,
-            "BASS": 0.10,
-            "HIHAT": 0.8,
-            "CRASH": 0.8,
+            "SNARE": 0.28,
+            "BASS": 0.40,
+            "HIHAT": 0.32,
+            "CRASH": 0.32,
         },
     )
 
@@ -1045,11 +1045,12 @@ def detect_markers_fast(detector, gray: np.ndarray, detect_downscale: float):
     return detected, ids, corners
 
 
-def detect_stick_tip(
+def detect_stick_tips(
     frame_bgr: np.ndarray,
-    prev_tip_full: Optional[np.ndarray],
+    prev_tips_full: List[np.ndarray],
     cfg: Config,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    max_tips: int = 2,
+) -> Tuple[List[np.ndarray], Optional[np.ndarray]]:
     scale = float(np.clip(cfg.stick_detect_downscale, 0.20, 1.0))
     if scale < 0.999:
         small = cv2.resize(frame_bgr, dsize=None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -1089,54 +1090,80 @@ def detect_stick_tip(
     if not candidates:
         if debug_view is not None:
             debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
-        return None, debug_view
+        return [], debug_view
 
-    picked_small: Optional[np.ndarray] = None
-    if prev_tip_full is None:
-        picked_small = max(candidates, key=lambda x: x[0])[1]
-    else:
-        prev_small = np.asarray(prev_tip_full, dtype=np.float32).reshape(2) * scale
-        candidates_with_dist = [
-            (float(np.linalg.norm(cxy - prev_small)), area, cxy)
-            for area, cxy in candidates
+    # Candidate points in full-frame coordinates.
+    full_candidates: List[Tuple[float, np.ndarray]] = []
+    for area, cxy in candidates:
+        p_full = np.asarray(cxy, dtype=np.float32).reshape(2) / scale
+        full_candidates.append((float(area), p_full))
+
+    max_tips = max(1, int(max_tips))
+    picked_tips_full: List[np.ndarray] = []
+    used_idx: Set[int] = set()
+    max_jump_full = float(cfg.stick_max_jump_px)
+    a = float(clamp01(cfg.stick_smooth_alpha))
+
+    # Track continuity for previously known tips first.
+    for prev in prev_tips_full[:max_tips]:
+        prev_xy = np.asarray(prev, dtype=np.float32).reshape(2)
+        best_idx = -1
+        best_dist = 1e18
+        for i, (_area, cand_xy) in enumerate(full_candidates):
+            if i in used_idx:
+                continue
+            dist = float(np.linalg.norm(cand_xy - prev_xy))
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+        if best_idx < 0:
+            continue
+        # Keep motion smooth and reject large jumps unless there is only one candidate.
+        if best_dist <= max_jump_full or len(full_candidates) == 1:
+            cand_xy = full_candidates[best_idx][1]
+            smoothed = (1.0 - a) * prev_xy + a * cand_xy
+            picked_tips_full.append(np.asarray(smoothed, dtype=np.float32))
+            used_idx.add(best_idx)
+
+    # Fill remaining slots using largest remaining green blobs.
+    if len(picked_tips_full) < max_tips:
+        remaining = [
+            (area, i, xy)
+            for i, (area, xy) in enumerate(full_candidates)
+            if i not in used_idx
         ]
-        candidates_with_dist.sort(key=lambda x: x[0])
-        max_jump_small = float(cfg.stick_max_jump_px) * scale
-        in_jump = [x for x in candidates_with_dist if x[0] <= max_jump_small]
-        if in_jump:
-            picked_small = in_jump[0][2]
-        elif len(candidates_with_dist) == 1:
-            # If this is the only candidate, allow large jump reacquisition.
-            picked_small = candidates_with_dist[0][2]
-        else:
-            if debug_view is not None:
-                debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
-            return None, debug_view
-
-    if picked_small is None:
-        if debug_view is not None:
-            debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
-        return None, debug_view
-
-    tip_full = picked_small / scale
-    tip_full = np.asarray(tip_full, dtype=np.float32).reshape(2)
-
-    if prev_tip_full is not None:
-        prev = np.asarray(prev_tip_full, dtype=np.float32).reshape(2)
-        a = float(clamp01(cfg.stick_smooth_alpha))
-        tip_full = (1.0 - a) * prev + a * tip_full
+        remaining.sort(key=lambda x: -x[0])
+        for _area, i, xy in remaining:
+            picked_tips_full.append(np.asarray(xy, dtype=np.float32))
+            used_idx.add(i)
+            if len(picked_tips_full) >= max_tips:
+                break
 
     if debug_view is not None:
         for _area, cxy in candidates:
             cx_i = int(round(float(cxy[0])))
             cy_i = int(round(float(cxy[1])))
             cv2.circle(debug_view, (cx_i, cy_i), 4, (128, 128, 255), 1, cv2.LINE_AA)
-        px = int(round(float(picked_small[0])))
-        py = int(round(float(picked_small[1])))
-        cv2.circle(debug_view, (px, py), 6, (0, 255, 0), 2, cv2.LINE_AA)
+        colors = [(0, 255, 0), (255, 255, 0)]
+        for i, tip_full in enumerate(picked_tips_full):
+            tip_small = np.asarray(tip_full, dtype=np.float32).reshape(2) * scale
+            px = int(round(float(tip_small[0])))
+            py = int(round(float(tip_small[1])))
+            col = colors[i % len(colors)]
+            cv2.circle(debug_view, (px, py), 6, col, 2, cv2.LINE_AA)
+            cv2.putText(
+                debug_view,
+                f"T{i + 1}",
+                (px + 8, py - 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                col,
+                1,
+                cv2.LINE_AA,
+            )
         debug_view = cv2.resize(debug_view, (480, 320), interpolation=cv2.INTER_NEAREST)
 
-    return tip_full, debug_view
+    return picked_tips_full, debug_view
 
 
 def polygon_area(pts_4x2: np.ndarray) -> float:
@@ -1886,10 +1913,10 @@ def main():
     smoothed_pose_by_mid: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
     # Optional stick-tip tracking + camera-only hit detection state.
-    stick_tip_full: Optional[np.ndarray] = None
+    stick_tips_full: List[np.ndarray] = []
     stick_mask_debug: Optional[np.ndarray] = None
-    closest_stick_info: Optional[Tuple[int, float, float, float]] = None
-    hit_state_by_mid: Dict[int, StickHitState] = {}
+    closest_stick_infos: List[Tuple[int, float, float, float]] = []
+    hit_state_by_tip: List[Dict[int, StickHitState]] = [{}, {}]
     feedback_by_mid: Dict[int, Tuple[Tuple[int, int, int], int]] = {}
 
     # Train mode state.
@@ -1917,7 +1944,8 @@ def main():
         ingest_idx = 0
         next_idx = 0
         pulses_by_mid.clear()
-        hit_state_by_mid.clear()
+        for tip_state in hit_state_by_tip:
+            tip_state.clear()
         feedback_by_mid.clear()
         pose_seen_by_mid.clear()
         score_summary_printed = False
@@ -1955,13 +1983,13 @@ def main():
             score_state.finished = False
 
     def start_session(from_auto: bool = False) -> bool:
-        nonlocal running, start_t, stick_tip_full, auto_start_at_t
+        nonlocal running, start_t, stick_tips_full, auto_start_at_t
         if mode_blocked:
             return False
 
         running = True
         start_t = time.perf_counter()
-        stick_tip_full = None
+        stick_tips_full.clear()
         auto_start_at_t = None
         reset_mode_state()
 
@@ -2049,23 +2077,38 @@ def main():
                 else:
                     now_ms = int(elapsed_ms)
 
-            hit_mid: Optional[int] = None
-            closest_stick_info = None
+            hit_mids: List[int] = []
+            closest_stick_infos = []
             if cfg.enable_stick_tracking:
-                tip_now, stick_mask_debug = detect_stick_tip(frame, stick_tip_full, cfg)
-                stick_tip_full = tip_now
-                hit_mid_raw, closest_stick_info = update_hit_states(
-                    stick_tip_full,
-                    mtx,
-                    poses,
-                    marker_id_to_radius_m,
-                    hit_state_by_mid,
-                    wall_ms,
-                    cfg,
-                )
-                if running:
-                    hit_mid = hit_mid_raw
-                    if hit_mid is not None:
+                tips_now, stick_mask_debug = detect_stick_tips(frame, stick_tips_full, cfg, max_tips=2)
+                stick_tips_full = tips_now
+                for tip_idx, tip_full in enumerate(stick_tips_full):
+                    if tip_idx >= len(hit_state_by_tip):
+                        hit_state_by_tip.append({})
+                    hit_mid_raw, closest_info = update_hit_states(
+                        tip_full,
+                        mtx,
+                        poses,
+                        marker_id_to_radius_m,
+                        hit_state_by_tip[tip_idx],
+                        wall_ms,
+                        cfg,
+                    )
+                    if closest_info is not None:
+                        closest_stick_infos.append(closest_info)
+                    if running and hit_mid_raw is not None:
+                        hit_mids.append(int(hit_mid_raw))
+
+                if running and hit_mids:
+                    seen_mids: Set[int] = set()
+                    unique_hit_mids: List[int] = []
+                    for mid in hit_mids:
+                        if mid in seen_mids:
+                            continue
+                        seen_mids.add(mid)
+                        unique_hit_mids.append(mid)
+                    hit_mids = unique_hit_mids
+                    for hit_mid in hit_mids:
                         hit_name = marker_id_to_name.get(hit_mid, f"ID {hit_mid}")
                         print(f"HIT: {hit_name} at {now_ms}ms")
                         if cfg.mode == "score" and score_state is not None:
@@ -2106,17 +2149,17 @@ def main():
                     dq.append(int(now_ms))
 
             if running and cfg.mode == "train" and train_state is not None:
-                correct_mid = wrong_mid = None
-                if hit_mid is not None:
+                for hit_mid in hit_mids:
                     correct_mid, wrong_mid, _advanced = update_train_mode(train_state, hit_mid, events, cfg)
-                if correct_mid is not None:
-                    set_feedback(feedback_by_mid, correct_mid, (0, 255, 0), wall_ms, cfg.feedback_flash_ms)
-                    print(f"TRAIN OK: {marker_id_to_name.get(correct_mid, f'ID {correct_mid}')}")
-                if wrong_mid is not None:
-                    set_feedback(feedback_by_mid, wrong_mid, (0, 0, 255), wall_ms, cfg.feedback_flash_ms)
-                    print(f"TRAIN MISS: {marker_id_to_name.get(wrong_mid, f'ID {wrong_mid}')}")
-            elif running and cfg.mode == "play" and hit_mid is not None:
-                set_feedback(feedback_by_mid, hit_mid, (0, 255, 0), wall_ms, cfg.feedback_flash_ms)
+                    if correct_mid is not None:
+                        set_feedback(feedback_by_mid, correct_mid, (0, 255, 0), wall_ms, cfg.feedback_flash_ms)
+                        print(f"TRAIN OK: {marker_id_to_name.get(correct_mid, f'ID {correct_mid}')}")
+                    if wrong_mid is not None:
+                        set_feedback(feedback_by_mid, wrong_mid, (0, 0, 255), wall_ms, cfg.feedback_flash_ms)
+                        print(f"TRAIN MISS: {marker_id_to_name.get(wrong_mid, f'ID {wrong_mid}')}")
+            elif running and cfg.mode == "play" and hit_mids:
+                for hit_mid in hit_mids:
+                    set_feedback(feedback_by_mid, hit_mid, (0, 255, 0), wall_ms, cfg.feedback_flash_ms)
             elif running and cfg.mode == "score" and score_state is not None:
                 process_score_mode_events(
                     score_state,
@@ -2306,17 +2349,32 @@ def main():
                     )
 
             if cfg.enable_stick_tracking and cfg.stick_debug:
-                if stick_tip_full is not None:
-                    tip_xy = np.asarray(stick_tip_full, dtype=np.float32).reshape(2)
+                tip_colors = [(255, 255, 0), (0, 255, 255)]
+                for i, tip_full in enumerate(stick_tips_full):
+                    tip_xy = np.asarray(tip_full, dtype=np.float32).reshape(2)
                     tip_u, tip_v = int(round(float(tip_xy[0]))), int(round(float(tip_xy[1])))
-                    cv2.circle(frame, (tip_u, tip_v), 6, (255, 255, 0), -1, lineType=cv2.LINE_AA)
+                    tip_col = tip_colors[i % len(tip_colors)]
+                    cv2.circle(frame, (tip_u, tip_v), 6, tip_col, -1, lineType=cv2.LINE_AA)
                     cv2.circle(frame, (tip_u, tip_v), 10, (0, 0, 0), 2, lineType=cv2.LINE_AA)
+                    cv2.putText(
+                        frame,
+                        f"T{i + 1}",
+                        (tip_u + 8, max(16, tip_v - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        tip_col,
+                        2,
+                        cv2.LINE_AA,
+                    )
 
-                dbg_text = "tip: none"
-                if closest_stick_info is not None:
-                    dbg_mid, dbg_z, dbg_r, dbg_vr = closest_stick_info
-                    dbg_name = marker_id_to_name.get(dbg_mid, f"ID {dbg_mid}")
-                    dbg_text = f"{dbg_name} z={dbg_z:+.3f} r={dbg_r:.3f} vr={dbg_vr:+.2f}"
+                dbg_text = "tips: none"
+                if closest_stick_infos:
+                    dbg_parts: List[str] = []
+                    for i, info in enumerate(closest_stick_infos[:2]):
+                        dbg_mid, dbg_z, dbg_r, dbg_vr = info
+                        dbg_name = marker_id_to_name.get(dbg_mid, f"ID {dbg_mid}")
+                        dbg_parts.append(f"T{i + 1} {dbg_name} z={dbg_z:+.3f} r={dbg_r:.3f} vr={dbg_vr:+.2f}")
+                    dbg_text = " | ".join(dbg_parts)
                 cv2.putText(
                     frame, dbg_text, (16, frame.shape[0] - 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.60, (255, 255, 255), 2, cv2.LINE_AA
@@ -2381,7 +2439,7 @@ def main():
             if key == ord("r"):
                 running = False
                 start_t = None
-                stick_tip_full = None
+                stick_tips_full.clear()
                 reset_mode_state()
                 print("Reset")
             if key == ord("n") and cfg.mode == "train" and running and train_state is not None:

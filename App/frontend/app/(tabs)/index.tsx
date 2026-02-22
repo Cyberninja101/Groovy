@@ -41,7 +41,7 @@ export default function HomeScreen() {
   const [selected, setSelected] = useState<string>(""); // "beatmap:<key>" OR "upload:<uuid>"
   const [uploading, setUploading] = useState(false);
 
-  // speed dropdown (ONLY used for uploaded MP3 submits)
+  // speed dropdown (always used for submit)
   const [notesAtATime, setNotesAtATime] = useState<number>(1);
 
   async function pickMp3() {
@@ -110,21 +110,21 @@ export default function HomeScreen() {
 
     const isBeatmap = selected.startsWith("beatmap:");
     const isUpload = selected.startsWith("upload:");
+    const speedQuery = `notes_at_a_time=${encodeURIComponent(
+      String(notesAtATime)
+    )}`;
 
     let url = "";
 
     if (isBeatmap) {
-      // ✅ HARD-CODED: IGNORE speed (do NOT send notes_at_a_time)
+      // Hardcoded beatmaps still honor the frontend speed choice.
       const beatmapName = selected.replace("beatmap:", "");
       url = `${BACKEND_BASE}/submit/hardcoded?beatmap=${encodeURIComponent(
         beatmapName
-      )}`;
+      )}&${speedQuery}`;
     } else if (isUpload) {
-      // ✅ UPLOAD: include speed
       const uploadId = selected.replace("upload:", "");
-      url = `${BACKEND_BASE}/submit/${encodeURIComponent(
-        uploadId
-      )}?notes_at_a_time=${encodeURIComponent(String(notesAtATime))}`;
+      url = `${BACKEND_BASE}/submit/${encodeURIComponent(uploadId)}?${speedQuery}`;
     } else {
       return Alert.alert("Bad selection value.");
     }
@@ -158,8 +158,6 @@ export default function HomeScreen() {
     : selected.startsWith("upload:")
     ? uploads.find((u) => `upload:${u.id}` === selected)?.name ?? ""
     : "";
-
-  const isBeatmap = selected.startsWith("beatmap:");
 
   return (
     <ScrollView
@@ -196,11 +194,9 @@ export default function HomeScreen() {
         </Picker>
       </View>
 
-      {/* Speed dropdown (disabled + visually dimmed for hardcoded) */}
-      <Text style={styles.sectionTitle}>Speed (uploads only)</Text>
-      <View style={[styles.pickerWrap, isBeatmap && styles.pickerDisabled]}>
+      <Text style={styles.sectionTitle}>Speed</Text>
+      <View style={styles.pickerWrap}>
         <Picker
-          enabled={!isBeatmap}
           selectedValue={notesAtATime}
           onValueChange={(val) => setNotesAtATime(Number(val))}
         >
@@ -255,9 +251,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#eee",
-  },
-  pickerDisabled: {
-    opacity: 0.5,
   },
   note: { marginTop: 6, textAlign: "center", opacity: 0.8 },
 });

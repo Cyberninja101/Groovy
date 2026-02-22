@@ -6,6 +6,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  ScrollView,
 } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { Picker } from "@react-native-picker/picker";
@@ -13,19 +14,26 @@ import { Picker } from "@react-native-picker/picker";
 const BACKEND_BASE = "http://10.48.46.35:8000";
 
 type LocalUploadItem = {
-  id: string;   // backend uuid
-  name: string; // original filename
+  id: string;
+  name: string;
   uri: string;
   ts: number;
 };
 
-// Hardcoded songs shown in the SAME dropdown.
-// label = what user sees
-// key   = what backend expects as beatmap name (NO spaces)
 const HARDCODED_SONGS = [
   { label: "stacyMom", key: "stacyMom" },
   { label: "seven nation army", key: "seven_nation_army" },
   { label: "APT", key: "APT" },
+];
+
+const NOTES_AT_A_TIME_OPTIONS = [
+  { label: "0.25", value: 0.25 },
+  { label: "0.5", value: 0.5 },
+  { label: "0.75", value: 0.75 },
+  { label: "1", value: 1 },
+  { label: "1.25", value: 1.25 },
+  { label: "1.5", value: 1.5 },
+  { label: "one note at a time", value: -1 },
 ];
 
 export default function HomeScreen() {
@@ -33,9 +41,9 @@ export default function HomeScreen() {
   const [selected, setSelected] = useState<string>(""); // "beatmap:<key>" OR "upload:<uuid>"
   const [uploading, setUploading] = useState(false);
 
-  // -------------------------
-  // Choose MP3 -> Upload/store on backend
-  // -------------------------
+  // speed dropdown (ONLY used for uploaded MP3 submits)
+  const [notesAtATime, setNotesAtATime] = useState<number>(1);
+
   async function pickMp3() {
     const res = await DocumentPicker.getDocumentAsync({
       type: ["audio/mpeg", "audio/*"],
@@ -65,7 +73,6 @@ export default function HomeScreen() {
       const resp = await fetch(`${BACKEND_BASE}/upload`, {
         method: "POST",
         body: form,
-        // DO NOT set Content-Type manually for FormData in RN fetch
       });
 
       const data = await resp.json().catch(async () => {
@@ -78,9 +85,7 @@ export default function HomeScreen() {
         );
       });
 
-      if (!resp.ok) {
-        throw new Error(data.error ?? JSON.stringify(data));
-      }
+      if (!resp.ok) throw new Error(data.error ?? JSON.stringify(data));
 
       const newItem: LocalUploadItem = {
         id: data.id,
@@ -92,7 +97,7 @@ export default function HomeScreen() {
       setUploads((prev) => [newItem, ...prev]);
       setSelected(`upload:${data.id}`);
 
-      Alert.alert("Uploaded!", `Server ID: ${data.id}\nFile: ${data.name}`);
+      Alert.alert("Uploaded!", data.name);
     } catch (e: any) {
       Alert.alert("Upload error", e?.message ?? String(e));
     } finally {
@@ -100,24 +105,26 @@ export default function HomeScreen() {
     }
   }
 
-  // -------------------------
-  // Submit -> either hardcoded beatmap OR uploaded mp3
-  // -------------------------
-  async function submitToBackend() {
+  async function submit() {
     if (!selected) return Alert.alert("Select a song first.");
 
     const isBeatmap = selected.startsWith("beatmap:");
     const isUpload = selected.startsWith("upload:");
 
     let url = "";
+
     if (isBeatmap) {
+      // ✅ HARD-CODED: IGNORE speed (do NOT send notes_at_a_time)
       const beatmapName = selected.replace("beatmap:", "");
       url = `${BACKEND_BASE}/submit/hardcoded?beatmap=${encodeURIComponent(
         beatmapName
       )}`;
     } else if (isUpload) {
+      // ✅ UPLOAD: include speed
       const uploadId = selected.replace("upload:", "");
-      url = `${BACKEND_BASE}/submit/${encodeURIComponent(uploadId)}`;
+      url = `${BACKEND_BASE}/submit/${encodeURIComponent(
+        uploadId
+      )}?notes_at_a_time=${encodeURIComponent(String(notesAtATime))}`;
     } else {
       return Alert.alert("Bad selection value.");
     }
@@ -136,9 +143,7 @@ export default function HomeScreen() {
         );
       });
 
-      if (!resp.ok) {
-        throw new Error(data.error ?? JSON.stringify(data));
-      }
+      if (!resp.ok) throw new Error(data.error ?? JSON.stringify(data));
 
       Alert.alert("Sent to Pi!", JSON.stringify(data.pi_ack ?? data, null, 2));
     } catch (e: any) {
@@ -154,8 +159,13 @@ export default function HomeScreen() {
     ? uploads.find((u) => `upload:${u.id}` === selected)?.name ?? ""
     : "";
 
+  const isBeatmap = selected.startsWith("beatmap:");
+
   return (
-    <View style={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={styles.title}>MP3 Manager</Text>
 
       <Pressable style={styles.button} onPress={pickMp3} disabled={uploading}>
@@ -163,15 +173,12 @@ export default function HomeScreen() {
       </Pressable>
 
       <Text style={styles.sectionTitle}>Songs</Text>
-
       <View style={styles.pickerWrap}>
         <Picker
           selectedValue={selected}
           onValueChange={(val) => setSelected(String(val))}
         >
           <Picker.Item label="Select..." value="" />
-
-          {/* Hardcoded songs */}
           {HARDCODED_SONGS.map((s) => (
             <Picker.Item
               key={`beatmap:${s.key}`}
@@ -179,13 +186,29 @@ export default function HomeScreen() {
               value={`beatmap:${s.key}`}
             />
           ))}
-
-          {/* Uploaded MP3s */}
           {uploads.map((u) => (
             <Picker.Item
               key={`upload:${u.id}`}
               label={u.name}
               value={`upload:${u.id}`}
+            />
+          ))}
+        </Picker>
+      </View>
+
+      {/* Speed dropdown (disabled + visually dimmed for hardcoded) */}
+      <Text style={styles.sectionTitle}>Speed (uploads only)</Text>
+      <View style={[styles.pickerWrap, isBeatmap && styles.pickerDisabled]}>
+        <Picker
+          enabled={!isBeatmap}
+          selectedValue={notesAtATime}
+          onValueChange={(val) => setNotesAtATime(Number(val))}
+        >
+          {NOTES_AT_A_TIME_OPTIONS.map((opt) => (
+            <Picker.Item
+              key={String(opt.value)}
+              label={opt.label}
+              value={opt.value}
             />
           ))}
         </Picker>
@@ -199,7 +222,7 @@ export default function HomeScreen() {
 
       <Pressable
         style={[styles.button, (!selected || uploading) && styles.buttonDisabled]}
-        onPress={submitToBackend}
+        onPress={submit}
         disabled={!selected || uploading}
       >
         {uploading ? (
@@ -208,13 +231,17 @@ export default function HomeScreen() {
           <Text style={styles.buttonText}>Submit</Text>
         )}
       </Pressable>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, gap: 14, justifyContent: "center" },
-  title: { fontSize: 28, fontWeight: "700", textAlign: "center" },
+  container: {
+    padding: 20,
+    gap: 14,
+    paddingBottom: 40, // extra space for scrolling
+  },
+  title: { fontSize: 28, fontWeight: "700", textAlign: "center", marginTop: 40 },
   sectionTitle: { marginTop: 10, fontSize: 18, fontWeight: "600" },
   button: {
     padding: 14,
@@ -228,6 +255,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#eee",
+  },
+  pickerDisabled: {
+    opacity: 0.5,
   },
   note: { marginTop: 6, textAlign: "center", opacity: 0.8 },
 });

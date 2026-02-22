@@ -4,6 +4,8 @@ import os, uuid, time, asyncio, json
 import websockets
 import os, json, re
 from flask import jsonify
+from drumchart import DrumChartConfig, DrumChartGenerator
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -60,27 +62,12 @@ def send_to_pi(payload: dict) -> dict:
 # MP3 → Beat JSON
 # -------------------------
 
-def mp3_to_beats_json(mp3_path: str, title: str) -> dict:
-    y, sr = librosa.load(mp3_path, sr=None, mono=True)
+def mp3_to_drum_events_json(mp3_path: str, title: str) -> dict:
+    cfg = DrumChartConfig()
+    gen = DrumChartGenerator(cfg, prefer_ffmpeg=True)
+    result = gen.generate(Path(mp3_path), title=title)
 
-    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-
-    events = [
-        {"t_ms": int(round(t * 1000)), "drum": 1}
-        for t in beat_times
-    ]
-
-    return {
-        "title": title,
-        "tempo_bpm": float(tempo),
-        "events": events,
-        "meta": {
-            "sample_rate": int(sr),
-            "num_beats": len(events)
-        }
-    }
+    return result
 #loading by name
 def load_beatmap(name: str) -> dict:
     # allow only safe filenames like brandy-1350, song_2, etc.
@@ -138,14 +125,14 @@ def upload():
 
     # 1️⃣ Convert MP3 to beat JSON
     try:
-        beat_json = mp3_to_beats_json(mp3_path, filename)
+        beat_json = mp3_to_drum_events_json(mp3_path, filename)
     except Exception as e:
         return jsonify(error=f"MP3 processing failed: {str(e)}"), 500
 
     # 2️⃣ Send JSON to Pi
     try:
         beatmap = load_beatmap("brandy-1350")
-        pi_ack = send_to_pi(beatmap)
+        pi_ack = send_to_pi(beat_json)
         #pi_ack = send_to_pi(beat_json)
     except Exception as e:
         pi_ack = {"ok": False, "error": str(e)}

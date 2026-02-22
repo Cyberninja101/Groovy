@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-JSON_PATH = Path("brandy-1350.json")   # change if needed
+JSON_PATH = Path("Brandy.drums.json")   # change if needed
 OUT_HTML  = Path("preview.html")
 
 def main():

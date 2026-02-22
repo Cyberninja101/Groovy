@@ -1,0 +1,9 @@
+# ignore audio + generated charts everywhere under Audio/
+**/*.mp3
+**/*.wav
+**/*.m4a
+
+**/*.json
+
+# ignore the whole public folder
+public/

@@ -82,25 +82,61 @@ def load_beatmap(name: str) -> dict:
 
 @app.route("/submit/<upload_id>", methods=["POST"])
 def submit(upload_id):
-    # find the saved mp3 by prefix
+    beatmap_name = request.args.get("beatmap")  # if present => hardcoded mode
+
+    # ---- NEW: read speed from query param (sent only on submit) ----
+    notes_raw = request.args.get("notes_at_a_time", None)
+    try:
+        speed = float(notes_raw) if notes_raw is not None else 1.0
+    except ValueError:
+        return jsonify(ok=False, error="notes_at_a_time must be numeric (e.g. 0.5, 1.25, -1)"), 400
+
+    # MODE A: hardcoded beatmap if query param present
+    if beatmap_name:
+        try:
+            beatmap = load_beatmap(beatmap_name)
+        except Exception as e:
+            return jsonify(ok=False, error=f"Beatmap load failed: {str(e)}"), 400
+
+        # ---- NEW: include speed in payload to Pi ----
+        beatmap["speed"] = speed
+
+        try:
+            pi_ack = send_to_pi(beatmap)
+        except Exception as e:
+            return jsonify(ok=False, error=f"Pi send failed: {str(e)}"), 500
+
+        return jsonify(ok=True, pi_ack=pi_ack, source="hardcoded", beatmap=beatmap_name, speed=speed)
+
+    # MODE B: uploaded MP3 id (convert + send)
     matches = [fn for fn in os.listdir(UPLOAD_DIR) if fn.startswith(upload_id + "_")]
     if not matches:
-        return jsonify({"ok": False, "error": "Upload not found"}), 404
+        return jsonify(ok=False, error="Upload not found"), 404
 
-    mp3_path = os.path.join(UPLOAD_DIR, matches[0])
-
-    # OPTION A: send hardcoded beatmap JSON
-    beatmap = load_beatmap("brandy-1350")
-
-    # OPTION B: or generate from the MP3 you saved
-    # beatmap = mp3_to_beats_json(mp3_path, title=matches[0])
+    fn = matches[0]
+    mp3_path = os.path.join(UPLOAD_DIR, fn)
+    original_name = fn.split("_", 1)[1] if "_" in fn else fn
 
     try:
-        pi_ack = send_to_pi(beatmap)
+        beat_json = mp3_to_drum_events_json(mp3_path, original_name)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify(ok=False, error=f"MP3 processing failed: {str(e)}"), 500
 
-    return jsonify({"ok": True, "pi_ack": pi_ack})
+    # ---- NEW: include speed in payload to Pi ----
+    beat_json["speed"] = speed
+
+    try:
+        pi_ack = send_to_pi(beat_json)
+    except Exception as e:
+        return jsonify(ok=False, error=f"Pi send failed: {str(e)}"), 500
+
+    return jsonify(
+        ok=True,
+        pi_ack=pi_ack,
+        source="mp3",
+        num_events=len(beat_json.get("events", [])),
+        speed=speed,
+    )
 # -------------------------
 # Upload Route
 # -------------------------
@@ -108,43 +144,23 @@ def submit(upload_id):
 @app.route("/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
-        return jsonify(error="No file field named 'file'"), 400
+        return jsonify(ok=False, error="No file field named 'file'"), 400
 
     f = request.files["file"]
     if not f or f.filename == "":
-        return jsonify(error="No file selected"), 400
+        return jsonify(ok=False, error="No file selected"), 400
 
     filename = secure_filename(f.filename)
     if not filename.lower().endswith(".mp3"):
-        return jsonify(error="Only .mp3 files allowed"), 400
+        return jsonify(ok=False, error="Only .mp3 files allowed"), 400
 
     upload_id = uuid.uuid4().hex
     stored_name = f"{upload_id}_{filename}"
     mp3_path = os.path.join(UPLOAD_DIR, stored_name)
     f.save(mp3_path)
 
-    # 1️⃣ Convert MP3 to beat JSON
-    try:
-        beat_json = mp3_to_drum_events_json(mp3_path, filename)
-    except Exception as e:
-        return jsonify(error=f"MP3 processing failed: {str(e)}"), 500
-
-    # 2️⃣ Send JSON to Pi
-    try:
-        beatmap = load_beatmap("brandy-1350")
-        pi_ack = send_to_pi(beat_json)
-        #pi_ack = send_to_pi(beat_json)
-    except Exception as e:
-        pi_ack = {"ok": False, "error": str(e)}
-
-    return jsonify(
-        ok=True,
-        id=upload_id,
-        name=filename,
-        tempo_bpm=beat_json["tempo_bpm"],
-        beats_detected=len(beat_json["events"]),
-        pi_ack=pi_ack
-    ), 200
+    # STORE ONLY
+    return jsonify(ok=True, id=upload_id, name=filename), 200
 
 
 if __name__ == "__main__":

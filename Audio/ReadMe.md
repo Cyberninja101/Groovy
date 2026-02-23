@@ -1,60 +1,58 @@
-## Preview UI (local) — step-by-step
+# Audio Tools
 
-### 0) Put files in one folder
+This folder stores beatmaps and helper scripts for previewing and generating drum-event JSON.
 
-- make_preview.py
-- your_chart.json (example: brandy-100.json)
-- (optional) preview template is generated automatically
+## Key Files
+- `mp3_to_drums.py`: MP3 -> drum event conversion utility.
+- `shift_beat.py`: timing-shift helper for beatmap events.
+- `tap_test.py`: quick timing/tap utility.
+- `make_preview.py`: generates `preview.html` for local timeline preview.
+- `preview.html`: browser preview output.
+- `latest-from-app.json`: latest payload mirrored from Pi bridge.
 
-### 1) Generate / update preview.html
+## Beatmap Preview Workflow
 
-From the folder:
+### 1) Generate/refresh preview
+
+```bash
+cd Audio
 python3 make_preview.py
+```
 
-Notes:
+If supported by your local script args:
 
-- If your script has a JSON_PATH variable, set it to your file name (ex: "brandy-100.json")
-- If your script supports CLI args, you can do:
-  python3 make_preview.py path/to/brandy-100.json
+```bash
+python3 make_preview.py path/to/your_chart.json
+```
 
-### 2) Host locally over HTTP (IMPORTANT for YouTube)
+### 2) Serve over HTTP
 
-In the same folder (where preview.html is):
+```bash
 python3 -m http.server 8000
+```
 
-Keep this terminal running.
+### 3) Open in browser
+- `http://localhost:8000/preview.html`
 
-### 3) Open the preview in your browser
+Important: do not open via `file://` if embedded content is used.
 
-Go to:
-http://localhost:8000/preview.html
+### 4) Iteration loop
+1. Edit JSON.
+2. Re-run `python3 make_preview.py`.
+3. Refresh browser (`Cmd/Ctrl+R`).
 
-DO NOT open preview.html with file://
-(YouTube iframe will error if you do)
+## Common Issues
+- Preview loads but no flashes:
+  - verify JSON path in `make_preview.py`
+  - check browser console for 404/errors
+- Embedded video error (e.g., YouTube error 153):
+  - serve with HTTP, do not use `file://`
 
-### 4) Refresh workflow (edit JSON -> re-generate -> refresh)
+## Optional Port
 
-Whenever you change the JSON:
-
-1. Re-run:
-   python3 make_preview.py
-2. Refresh the browser tab:
-   Cmd+R (Mac) / Ctrl+R (Windows/Linux)
-   If it looks cached, hard refresh:
-   Cmd+Shift+R / Ctrl+Shift+R
-
-### 5) Common issues
-
-- "Watch video on YouTube" / Error 153:
-  You opened the file with file:// or you are not serving over HTTP.
-  Fix: use http://localhost:8000/preview.html
-
-- Page loads but boxes don't flash:
-  Make sure preview.html and the JSON file are in the same folder (or the path in make_preview.py is correct).
-  Check browser console for 404.
-
-### 6) Optional: change port
-
+```bash
 python3 -m http.server 3000
-then open:
-http://localhost:3000/preview.html
+```
+
+Then open:
+- `http://localhost:3000/preview.html`

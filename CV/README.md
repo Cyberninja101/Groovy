@@ -1,27 +1,25 @@
-# ArUco Drum Overlay
+# Groovy CV Runtime
 
-Real-time drum trainer/visualizer using OpenCV ArUco pose estimation + 3D projected rings.
+Realtime camera engine for marker tracking, ring rendering, stick tracking, and gameplay.
 
-## What it does
-- Captures camera frames in a background thread for lower latency.
-- Detects ArUco markers and tracks corners between detections with optical flow.
-- Estimates marker pose and renders 3D rings with `cv2.projectPoints`.
-- Supports per-drum 3D ring sizes.
-- Supports three modes:
-  - `play`: timeline-based pulse playback.
-  - `train`: waits for correct hits before advancing.
-  - `score`: timeline playback with live accuracy scoring from stick hits.
+## What It Does
+- Captures frames in a background thread for low-latency processing.
+- Detects ArUco markers and estimates marker pose in 3D.
+- Renders projected drum rings and pulse animations.
+- Tracks up to two green stick tips (`T1`, `T2`) in debug mode.
+- Runs `play`, `train`, and `score` modes with live UI feedback.
+- Runs fullscreen output by default (`drum_overlay` window).
 
-## Files
-- `CV/main.py`: live app (all modes + rendering + stick tracking).
-- `CV/calibrate_camera.py`: camera calibration, writes `CV/calib.npz`.
-- `CV/calib.npz`: intrinsics/distortion file required for 3D mode.
+## Core Files
+- `CV/main.py`: main runtime and all gameplay/render logic.
+- `CV/calibrate_camera.py`: generates camera intrinsics file.
+- `CV/calib.npz`: calibration file required for 3D pose/ring rendering.
 
 ## Requirements
 - Python 3.9+
-- `opencv-contrib-python` (for `cv2.aruco`)
+- `opencv-contrib-python`
 - `numpy`
-- Camera/webcam
+- webcam (or Continuity Camera/iPhone camera)
 
 Install:
 
@@ -30,105 +28,93 @@ python3 -m pip install --upgrade pip
 python3 -m pip install opencv-contrib-python numpy
 ```
 
-## Basic run
-
-```bash
-python3 CV/main.py
-```
-
-Controls:
-- `s`: start
-- `r`: reset
-- `q`: quit
-- `n`: skip to next chord (train mode only)
-
-## Modes
-
-### Play mode (default)
-Normal timeline pulse visualization (existing behavior).
-
-```bash
-python3 CV/main.py --mode play
-```
-
-Playback speed:
-
-```bash
-python3 CV/main.py --mode play --speed 0.8
-python3 CV/main.py --mode play --speed 1.5
-```
-
-### Train mode
-Song does not advance by time. You must hit expected drum(s) to advance.
-
-```bash
-python3 CV/main.py --mode train --stick-track
-```
-
-If `--stick-track` is missing, start is blocked and a warning banner is shown.
-
-### Score mode
-Song runs on normal timeline while stick hits are matched to expected notes.
-Banner shows live accuracy and judgment.
+## Run
 
 ```bash
 python3 CV/main.py --mode score --stick-track
 ```
 
-If `--stick-track` is missing, start is blocked and a warning banner is shown.
-
-Scoring defaults:
-- Match window: early `220ms`, late `260ms`.
-- Auto timing offset uses EMA (`offset_ms`) and is shown live.
-- Judgments:
-  - Correct drum: `PERFECT/GOOD/OK/MISS` from timing.
-  - Wrong drum in window: partial credit only when close.
-- Expected notes with no 3D pose in their window are skipped (not counted in denominator).
-- Extra hits are tracked for reporting (not penalized by default).
-
-## Stick tracking flags
+Common options:
 
 ```bash
+--mode {play,train,score}
+--speed FLOAT
 --stick-track
 --stick-hsv-lower H,S,V
 --stick-hsv-upper H,S,V
 --stick-min-area N
 --stick-max-jump N
 --stick-debug
+--auto-start-delay SECONDS
+--pi
+--show-fps
 ```
+
+Controls:
+- `s` start
+- `r` reset
+- `q` or `Esc` quit
+- `n` skip to next chord (`train` mode only)
+
+## Modes
+
+### Play
+- Timeline pulse visualization + hit flash feedback.
+- No scoring judgment pipeline.
+
+```bash
+python3 CV/main.py --mode play --speed 1.0
+```
+
+### Train
+- Time does not advance by timeline.
+- You must hit expected drum(s) to move forward.
+- Start is blocked unless `--stick-track` is enabled.
+
+```bash
+python3 CV/main.py --mode train --stick-track
+```
+
+### Score
+- Timeline advances with optional speed scaling.
+- Expected notes are matched to stick hits.
+- Live banner shows accuracy, counts, and offset.
+- Every 10 scored notes (including misses) triggers a center popup:
+  `Last 10 acc: XX% (...)`.
+
+```bash
+python3 CV/main.py --mode score --stick-track --stick-debug
+```
+
+## Stick Tracking Notes
+- Stick detection is HSV-based; default range is green-ish:
+  - lower: `35,80,80`
+  - upper: `95,255,255`
+- Hit detection is intentionally forgiving and prioritizes being inside the drum area over speed.
+- `--stick-debug` opens `stick_mask` and shows tip overlays (`T1`, `T2`) plus nearest-marker telemetry.
+
+## Startup Countdown
+- If `--auto-start-delay` is set, a large center-screen countdown is shown until start.
 
 Example:
 
 ```bash
-python3 CV/main.py --mode score --stick-track \
-  --stick-hsv-lower 35,80,80 --stick-hsv-upper 95,255,255 --stick-debug
+python3 CV/main.py --mode score --stick-track --auto-start-delay 3 --stick-debug
 ```
 
-## Raspberry Pi
-
-Use Pi preset:
+## Raspberry Pi Preset
+- `--pi` adjusts detection/render defaults for lower compute devices.
 
 ```bash
-python3 CV/main.py --pi --show-fps
+python3 CV/main.py --pi --mode score --stick-track --show-fps
 ```
 
-More speed (lower quality):
+## Drum Circle Size
+Edit per-drum radii in `make_config()` (`drum_name_to_highlight_r_m`).
 
-```bash
-python3 CV/main.py --pi --detect-scale 0.6 --detect-every 3 --show-fps
-```
+Higher number means bigger ring (radius in meters on marker plane).
 
-More quality (higher CPU):
+## Default Song Source
+`Config.song_path` currently points to:
 
-```bash
-python3 CV/main.py --pi --detect-scale 0.8 --detect-every 1 --show-fps
-```
-
-## Per-drum 3D size
-
-Set per-drum radii in `make_config()` (`drum_name_to_highlight_r_m`).
-
-These affect:
-- base 3D ring size
-- pulse animation scale/thickness
-- roll animation scale/thickness
+`App/backend/beatmaps/seven_nation_army.json`

@@ -77,7 +77,7 @@ Note: frontend speed selection is always sent as `notes_at_a_time` and is the fi
 ## Media
 
 <p align="center">
-  <img src="View recent photos 5.png" alt="Groovy Photo 1" width="420" />
+  <img src="docs/media/View recent photos 5.png" alt="Groovy Photo 1" width="420" />
 </p>
 <p align="center">
   <img src="docs/media/IMG_0720.png" alt="Groovy Photo 2" width="420" />

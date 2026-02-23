@@ -1,12 +1,22 @@
+<p align="center">
+  <img src="docs/media/GLogo.png" alt="Groovy logo" width="360" />
+</p>
+
 # Groovy
 
 Groovy is an augmented-reality drum trainer and rhythm game built for Cornell Make-a-thon, where we won first place out of 150+ participants.
 
 ## Media
 
-![Groovy Photo 1](docs/media/IMG_0719.png)
-![Groovy Photo 2](docs/media/IMG_0720.png)
-![Groovy Photo 3](docs/media/IMG_0723.png)
+<p align="center">
+  <img src="docs/media/IMG_0719.png" alt="Groovy Photo 1" width="720" />
+</p>
+<p align="center">
+  <img src="docs/media/IMG_0720.png" alt="Groovy Photo 2" width="720" />
+</p>
+<p align="center">
+  <img src="docs/media/IMG_0723.png" alt="Groovy Photo 3" width="720" />
+</p>
 
 <video src="docs/media/Groovy.mp4" controls width="900"></video>
 

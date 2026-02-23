@@ -7,3 +7,4 @@ Reserved folder for miscellaneous notes, temporary assets, and scratch files tha
 - `Audio/`
 
 Keep durable project docs in the top-level `README.md` or module READMEs instead.
+ 

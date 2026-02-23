@@ -6,25 +6,7 @@
 
 Groovy is an augmented-reality drum trainer and rhythm game built for Cornell Make-a-thon, where we won first place out of 150+ participants.
 
-## Media
-
-<p align="center">
-  <img src="docs/media/IMG_0719.png" alt="Groovy Photo 1" width="420" />
-</p>
-<p align="center">
-  <img src="docs/media/IMG_0720.png" alt="Groovy Photo 2" width="420" />
-</p>
-<p align="center">
-  <img src="docs/media/IMG_0723.png" alt="Groovy Photo 3" width="420" />
-</p>
-
 [Watch demo on YouTube](https://youtu.be/zjiVDPzzH5k)
-
-<p align="center">
-  <a href="https://youtu.be/zjiVDPzzH5k">
-    <img src="https://img.youtube.com/vi/zjiVDPzzH5k/hqdefault.jpg" alt="Groovy YouTube demo" width="720" />
-  </a>
-</p>
 
 ## What Groovy Does
 - Renders realtime 3D drum guides from ArUco marker pose estimation.
@@ -90,3 +72,16 @@ Note: frontend speed selection is always sent as `notes_at_a_time` and is the fi
 - App stack (frontend/backend): `App/README.md`
 - Frontend-only notes: `App/frontend/README.md`
 - Audio tools: `Audio/ReadMe.md`
+
+
+## Media
+
+<p align="center">
+  <img src="docs/media/IMG_0719.png" alt="Groovy Photo 1" width="420" />
+</p>
+<p align="center">
+  <img src="docs/media/IMG_0720.png" alt="Groovy Photo 2" width="420" />
+</p>
+<p align="center">
+  <img src="docs/media/IMG_0723.png" alt="Groovy Photo 3" width="420" />
+</p>

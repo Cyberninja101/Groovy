@@ -9,13 +9,13 @@ Groovy is an augmented-reality drum trainer and rhythm game built for Cornell Ma
 ## Media
 
 <p align="center">
-  <img src="docs/media/IMG_0719.png" alt="Groovy Photo 1" width="720" />
+  <img src="docs/media/IMG_0719.png" alt="Groovy Photo 1" width="420" />
 </p>
 <p align="center">
-  <img src="docs/media/IMG_0720.png" alt="Groovy Photo 2" width="720" />
+  <img src="docs/media/IMG_0720.png" alt="Groovy Photo 2" width="420" />
 </p>
 <p align="center">
-  <img src="docs/media/IMG_0723.png" alt="Groovy Photo 3" width="720" />
+  <img src="docs/media/IMG_0723.png" alt="Groovy Photo 3" width="420" />
 </p>
 
 [Watch demo on YouTube](https://youtu.be/zjiVDPzzH5k)

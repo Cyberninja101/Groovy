@@ -2,6 +2,16 @@
 
 Groovy is an augmented-reality drum trainer and rhythm game built for Cornell Make-a-thon, where we won first place out of 150+ participants.
 
+## Media
+
+![Groovy Photo 1](docs/media/IMG_0719.png)
+![Groovy Photo 2](docs/media/IMG_0720.png)
+![Groovy Photo 3](docs/media/IMG_0723.png)
+
+<video src="docs/media/Groovy.mp4" controls width="900"></video>
+
+[Download/View video file](docs/media/Groovy.mp4)
+
 ## What Groovy Does
 - Renders realtime 3D drum guides from ArUco marker pose estimation.
 - Tracks up to two green drum sticks and maps hits from camera data only.

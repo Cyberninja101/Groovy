@@ -1,5 +1,6 @@
 <p align="center">
   <img src="docs/media/GLogo.png" alt="Groovy logo" width="360" />
+  <img src="renderLOL.png" alt="Groovy logo" width="960" />
 </p>
 
 # Groovy

@@ -3,9 +3,9 @@
   <img src="renderLOL.png" alt="Groovy logo" width="960" />
 </p>
 
-# Groovy
+# GroovyAR (1st Place Overall)
 
-Groovy is an augmented-reality drum trainer and rhythm game built for Cornell Make-a-thon, where we won first place out of 200+ participants.
+GroovyAR is an augmented-reality drum trainer and rhythm game built for Cornell Make-a-thon, where we won first place out of 200+ participants.
 
 [Watch demo on YouTube](https://youtu.be/zjiVDPzzH5k)
 
